@@ -1,0 +1,47 @@
+name: Component Versions
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  component-versions:
+    name: Print Docker component versions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Print runner tool versions
+        run: |
+          echo "======== GitHub Actions Runner Versions ========"
+          echo "Runner OS: $(uname -a)"
+          echo "Docker:    $(docker --version)"
+          echo "Buildx:    $(docker buildx version)"
+          echo "==============================================="
+
+      - name: Build Alpine image and print versions
+        run: |
+          docker build \
+            --progress=plain \
+            --target release-alpine \
+            --tag docker-component-version-test:alpine \
+            .
+
+      - name: Run Alpine image
+        run: docker run --rm docker-component-version-test:alpine
+
+      - name: Build Ubuntu image and print versions
+        run: |
+          docker build \
+            --progress=plain \
+            --target release-ubuntu \
+            --tag docker-component-version-test:ubuntu \
+            .
+
+      - name: Run Ubuntu image
+        run: docker run --rm docker-component-version-test:ubuntu
