@@ -26,7 +26,7 @@ COPY --link --from=build /app/main .
 RUN apk add --no-cache ca-certificates openssl && \
     echo "======== Stage 2: Alpine Versions ========" && \
     echo "Alpine version:      $(cat /etc/alpine-release)" && \
-    echo "ca-certificates:     $(apk info -v ca-certificates 2>/dev/null)" && \
+    echo "ca-certificates:     $(apk list --installed ca-certificates | cut -d' ' -f1)" && \
     echo "openssl version:     $(openssl version)" && \
     echo "=========================================="
 
