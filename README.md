@@ -7,6 +7,7 @@ Docker builds and GitHub Actions runs.
 
 - Builds a Go application that prints a greeting and a generated UUID.
 - Uses a multi-stage Dockerfile to build the Go binary once.
+- Resolves selected Go modules with `go get module@latest` during Docker builds.
 - Produces Alpine and Ubuntu based runtime images.
 - Prints versions for Go modules, base images, and selected system components.
 - Runs in GitHub Actions so the version output is visible in workflow logs.
@@ -39,7 +40,7 @@ The workflow in `.github/workflows/component-versions.yml` can be run manually o
 triggered by pushes to `main` or `master`. It prints:
 
 - GitHub Actions runner, Docker, and Buildx versions.
-- Go version and Go module dependency versions.
+- Go version and Go module dependency versions resolved during Docker build.
 - Alpine version and selected Alpine package versions.
 - Ubuntu version and selected Ubuntu package versions.
 - Application output from both runtime images.

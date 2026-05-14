@@ -2,7 +2,13 @@
 FROM golang:latest AS build
 WORKDIR /app
 COPY --link . .
-RUN go mod download && CGO_ENABLED=0 GOOS=linux go build -o main .
+RUN go get \
+        github.com/google/uuid@latest \
+        github.com/stretchr/testify@latest \
+        go.temporal.io/sdk@latest \
+        google.golang.org/grpc@latest && \
+    go mod download && \
+    CGO_ENABLED=0 GOOS=linux go build -o main .
 
 # Print Go and module versions
 RUN echo "======== Stage 1: Build Versions ========" && \
@@ -37,7 +43,6 @@ RUN apt-get update && \
         ca-certificates \
         software-properties-common \
         httping \
-        man \
         man-db \
         vim \
         screen \
@@ -73,17 +78,43 @@ RUN apt-get update && \
 # Print installed component versions
 RUN echo "======== Stage 3: Ubuntu Versions ========" && \
     echo "Ubuntu version:      $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2)" && \
-    echo "curl:                $(curl --version | head -1)" && \
-    echo "openssl:             $(openssl version)" && \
-    echo "vim:                 $(vim --version | head -1)" && \
-    echo "jq:                  $(jq --version)" && \
-    echo "nmap:                $(nmap --version | head -1)" && \
-    echo "socat:               $(socat -V | head -2 | tail -1)" && \
-    echo "tcpdump:             $(tcpdump --version 2>&1 | head -1)" && \
-    echo "traceroute:          $(traceroute --version 2>&1 | head -1)" && \
-    echo "htop:                $(htop --version | head -1)" && \
-    echo "wget:                $(wget --version | head -1)" && \
-    echo "ca-certificates:     $(dpkg -s ca-certificates 2>/dev/null | grep Version)" && \
+    echo "" && \
+    echo "APT package versions:" && \
+    dpkg-query -W -f='${binary:Package}: ${Version}\n' \
+        apt-transport-https \
+        ca-certificates \
+        software-properties-common \
+        httping \
+        man-db \
+        vim \
+        screen \
+        curl \
+        gnupg \
+        atop \
+        htop \
+        jq \
+        dnsutils \
+        tcpdump \
+        traceroute \
+        iputils-ping \
+        iptables \
+        net-tools \
+        ncat \
+        iproute2 \
+        strace \
+        telnet \
+        openssl \
+        psmisc \
+        dsniff \
+        mtr-tiny \
+        conntrack \
+        ethtool \
+        iputils-tracepath \
+        lsof \
+        nmap \
+        socat \
+        sysstat \
+        wget && \
     echo "=========================================="
 
 CMD ["./main"]

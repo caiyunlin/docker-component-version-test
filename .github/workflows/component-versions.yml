@@ -16,13 +16,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Print runner tool versions
+      - name: Build stage and print Go module versions
         run: |
-          echo "======== GitHub Actions Runner Versions ========"
-          echo "Runner OS: $(uname -a)"
-          echo "Docker:    $(docker --version)"
-          echo "Buildx:    $(docker buildx version)"
-          echo "==============================================="
+          docker build \
+            --progress=plain \
+            --target build \
+            --tag docker-component-version-test:build \
+            .
 
       - name: Build Alpine image and print versions
         run: |
@@ -32,9 +32,6 @@ jobs:
             --tag docker-component-version-test:alpine \
             .
 
-      - name: Run Alpine image
-        run: docker run --rm docker-component-version-test:alpine
-
       - name: Build Ubuntu image and print versions
         run: |
           docker build \
@@ -42,6 +39,3 @@ jobs:
             --target release-ubuntu \
             --tag docker-component-version-test:ubuntu \
             .
-
-      - name: Run Ubuntu image
-        run: docker run --rm docker-component-version-test:ubuntu
