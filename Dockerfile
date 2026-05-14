@@ -2,7 +2,7 @@
 FROM golang:latest AS build
 WORKDIR /app
 COPY --link . .
-RUN go mod download && go build -o main .
+RUN go mod download && CGO_ENABLED=0 GOOS=linux go build -o main .
 
 # Print Go and module versions
 RUN echo "======== Stage 1: Build Versions ========" && \
