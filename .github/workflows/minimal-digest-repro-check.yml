@@ -2,20 +2,66 @@ name: Minimal Digest Repro Check
 
 on:
   workflow_dispatch:
+    inputs:
+      acr_repository:
+        description: ACR repository for minimal reproducibility test
+        required: true
+        default: docker-component-version-test-minimal-repro
 
 jobs:
   repro-check:
-    name: Build twice and compare digest
+    name: Push twice and compare ACR digest
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.AZURE_CREDENTIALS }}" ]; then
+            echo "AZURE_CREDENTIALS secret is missing"
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.ACR_NAME }}" ]; then
+            echo "ACR_NAME secret is missing"
+            exit 1
+          fi
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: First build
+      - name: Prepare ACR context
+        run: |
+          set -euo pipefail
+          ACR_NAME_RAW="${{ secrets.ACR_NAME }}"
+          ACR_NAME=$(echo "$ACR_NAME_RAW" | tr '[:upper:]' '[:lower:]' | sed -e 's#^https\?://##' -e 's#/.*$##' -e 's#\.azurecr\.io$##' -e "s/[\"']//g" | xargs)
+          ACR_LOGIN_SERVER="$ACR_NAME.azurecr.io"
+          ACR_REPOSITORY="${{ inputs.acr_repository }}"
+          TAG_PREFIX="repro-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          TAG_1="${TAG_PREFIX}-first"
+          TAG_2="${TAG_PREFIX}-second"
+
+          az acr login --name "$ACR_NAME"
+
+          echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
+          echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
+          echo "ACR_REPOSITORY=$ACR_REPOSITORY" >> "$GITHUB_ENV"
+          echo "TAG_1=$TAG_1" >> "$GITHUB_ENV"
+          echo "TAG_2=$TAG_2" >> "$GITHUB_ENV"
+
+          echo "Using registry: $ACR_LOGIN_SERVER"
+          echo "Using repository: $ACR_REPOSITORY"
+          echo "Tag #1: $TAG_1"
+          echo "Tag #2: $TAG_2"
+
+      - name: First build and push
         run: |
           set -euo pipefail
           docker buildx build \
@@ -23,15 +69,26 @@ jobs:
             --provenance=false \
             --sbom=false \
             --file Dockerfile.minimal-repro \
-            --tag local/minimal-repro:first \
-            --load \
+            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$TAG_1" \
+            --push \
             .
 
-          IMAGE_ID_1=$(docker image inspect local/minimal-repro:first --format='{{.Id}}')
-          echo "IMAGE_ID_1=$IMAGE_ID_1" >> "$GITHUB_ENV"
-          echo "First build image ID: $IMAGE_ID_1"
+          DIGEST_1=$(az acr repository show-manifests \
+            --name "$ACR_NAME" \
+            --repository "$ACR_REPOSITORY" \
+            --orderby time_desc \
+            --query "[?tags!=null && contains(tags, '$TAG_1')].digest | [0]" \
+            -o tsv)
 
-      - name: Second build
+          if [ -z "$DIGEST_1" ]; then
+            echo "Cannot find digest for tag $TAG_1"
+            exit 1
+          fi
+
+          echo "DIGEST_1=$DIGEST_1" >> "$GITHUB_ENV"
+          echo "Digest #1: $DIGEST_1"
+
+      - name: Second build and push
         run: |
           set -euo pipefail
           docker buildx build \
@@ -39,31 +96,54 @@ jobs:
             --provenance=false \
             --sbom=false \
             --file Dockerfile.minimal-repro \
-            --tag local/minimal-repro:second \
-            --load \
+            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$TAG_2" \
+            --push \
             .
 
-          IMAGE_ID_2=$(docker image inspect local/minimal-repro:second --format='{{.Id}}')
-          echo "IMAGE_ID_2=$IMAGE_ID_2" >> "$GITHUB_ENV"
-          echo "Second build image ID: $IMAGE_ID_2"
+          DIGEST_2=$(az acr repository show-manifests \
+            --name "$ACR_NAME" \
+            --repository "$ACR_REPOSITORY" \
+            --orderby time_desc \
+            --query "[?tags!=null && contains(tags, '$TAG_2')].digest | [0]" \
+            -o tsv)
+
+          if [ -z "$DIGEST_2" ]; then
+            echo "Cannot find digest for tag $TAG_2"
+            exit 1
+          fi
+
+          echo "DIGEST_2=$DIGEST_2" >> "$GITHUB_ENV"
+          echo "Digest #2: $DIGEST_2"
 
       - name: Compare results
         run: |
           set -euo pipefail
-          echo "Build #1 image ID: $IMAGE_ID_1"
-          echo "Build #2 image ID: $IMAGE_ID_2"
+          echo "Digest #1: $DIGEST_1"
+          echo "Digest #2: $DIGEST_2"
 
           {
             echo "## Minimal Digest Repro Check"
             echo ""
-            echo "- Build #1: $IMAGE_ID_1"
-            echo "- Build #2: $IMAGE_ID_2"
+            echo "- Registry: $ACR_LOGIN_SERVER"
+            echo "- Repository: $ACR_REPOSITORY"
+            echo "- Tag #1: $TAG_1"
+            echo "- Tag #2: $TAG_2"
+            echo "- Digest #1: $DIGEST_1"
+            echo "- Digest #2: $DIGEST_2"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$IMAGE_ID_1" = "$IMAGE_ID_2" ]; then
-            echo "Result: identical image IDs (stable in this minimal scenario)."
-            echo "- Result: identical image IDs" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$DIGEST_1" = "$DIGEST_2" ]; then
+            echo "Result: identical digests (stable in this minimal ACR scenario)."
+            echo "- Result: identical digests" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Result: different image IDs (not reproducible yet)."
-            echo "- Result: different image IDs" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: different digests (not reproducible yet)."
+            echo "- Result: different digests" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Cleanup temporary tags (best effort)
+        if: always()
+        run: |
+          set +e
+          az acr repository untag --name "$ACR_NAME" --image "$ACR_REPOSITORY:$TAG_1"
+          az acr repository untag --name "$ACR_NAME" --image "$ACR_REPOSITORY:$TAG_2"
+          exit 0
