@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -68,26 +67,24 @@ func exitUsage(msg string) {
 }
 
 func run(cfg config) error {
-	fmt.Println("=== Login ACR ===")
-	if _, err := runCommand("az", "acr", "login", "--name", cfg.acrName); err != nil {
-		return err
-	}
-
-	loginServer, err := runCommand("az", "acr", "show", "--name", cfg.acrName, "--query", "loginServer", "-o", "tsv")
+	normalizedAcrName, err := normalizeAcrName(cfg.acrName)
 	if err != nil {
 		return err
 	}
-	loginServer = strings.TrimSpace(loginServer)
-	if loginServer == "" {
-		return errors.New("cannot resolve ACR login server")
+
+	fmt.Println("=== Login ACR ===")
+	if _, err := runCommand("az", "acr", "login", "--name", normalizedAcrName); err != nil {
+		return err
 	}
+
+	loginServer := fmt.Sprintf("%s.azurecr.io", normalizedAcrName)
 
 	imageRef := fmt.Sprintf("%s/%s:%s", loginServer, cfg.repository, cfg.tag)
 	candidateTag := fmt.Sprintf("%s-%d", cfg.candidateTagPrefix, time.Now().Unix())
 	candidateRef := fmt.Sprintf("%s/%s:%s", loginServer, cfg.repository, candidateTag)
 
 	fmt.Printf("=== Resolve existing digest for %s ===\n", imageRef)
-	oldDigest, err := getTagDigest(cfg.acrName, cfg.repository, cfg.tag)
+	oldDigest, err := getTagDigest(normalizedAcrName, cfg.repository, cfg.tag)
 	if err != nil {
 		return err
 	}
@@ -103,7 +100,7 @@ func run(cfg config) error {
 	}
 
 	fmt.Printf("=== Resolve candidate digest for %s ===\n", candidateRef)
-	newDigest, err := getTagDigest(cfg.acrName, cfg.repository, candidateTag)
+	newDigest, err := getTagDigest(normalizedAcrName, cfg.repository, candidateTag)
 	if err != nil {
 		return err
 	}
@@ -114,7 +111,7 @@ func run(cfg config) error {
 
 	if oldDigest != "" && oldDigest == newDigest {
 		fmt.Println("Digest unchanged. Skip tests and publish.")
-		if _, err := runCommand("az", "acr", "repository", "untag", "--name", cfg.acrName, "--image", fmt.Sprintf("%s:%s", cfg.repository, candidateTag)); err != nil {
+		if _, err := runCommand("az", "acr", "repository", "untag", "--name", normalizedAcrName, "--image", fmt.Sprintf("%s:%s", cfg.repository, candidateTag)); err != nil {
 			return err
 		}
 		return nil
@@ -126,17 +123,33 @@ func run(cfg config) error {
 	}
 
 	fmt.Printf("=== Promote candidate digest to release tag: %s ===\n", imageRef)
-	if _, err := runCommand("az", "acr", "import", "--name", cfg.acrName, "--source", fmt.Sprintf("%s/%s@%s", loginServer, cfg.repository, newDigest), "--image", fmt.Sprintf("%s:%s", cfg.repository, cfg.tag), "--force"); err != nil {
+	if _, err := runCommand("az", "acr", "import", "--name", normalizedAcrName, "--source", fmt.Sprintf("%s/%s@%s", loginServer, cfg.repository, newDigest), "--image", fmt.Sprintf("%s:%s", cfg.repository, cfg.tag), "--force"); err != nil {
 		return err
 	}
 
 	fmt.Println("=== Cleanup candidate tag ===")
-	if _, err := runCommand("az", "acr", "repository", "untag", "--name", cfg.acrName, "--image", fmt.Sprintf("%s:%s", cfg.repository, candidateTag)); err != nil {
+	if _, err := runCommand("az", "acr", "repository", "untag", "--name", normalizedAcrName, "--image", fmt.Sprintf("%s:%s", cfg.repository, candidateTag)); err != nil {
 		return err
 	}
 
 	fmt.Println("Done. New digest published successfully.")
 	return nil
+}
+
+func normalizeAcrName(raw string) (string, error) {
+	name := strings.TrimSpace(strings.ToLower(raw))
+	name = strings.Trim(name, "\"'")
+	name = strings.TrimPrefix(name, "https://")
+	name = strings.TrimPrefix(name, "http://")
+	name = strings.Split(name, "/")[0]
+	name = strings.TrimSuffix(name, ".azurecr.io")
+	name = strings.TrimSpace(name)
+
+	if name == "" {
+		return "", fmt.Errorf("invalid acr name: %q", raw)
+	}
+
+	return name, nil
 }
 
 func getTagDigest(acrName, repository, tag string) (string, error) {
