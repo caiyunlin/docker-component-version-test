@@ -1,0 +1,5 @@
+# syntax=docker/dockerfile:1
+FROM scratch
+
+LABEL org.opencontainers.image.title="minimal-repro-check"
+LABEL org.opencontainers.image.description="Minimal image for digest stability verification"
