@@ -34,6 +34,51 @@ Run the Go application directly:
 go run .
 ```
 
+## Push to ACR only when digest changed
+
+The Go tool below compares the current ACR tag digest with a newly built
+candidate digest:
+
+- If digest is the same: print a message and exit.
+
+- If digest is different: run tests, then publish.
+
+Notes:
+
+- The script uses a temporary candidate tag (`candidate-<timestamp>`) for digest comparison.
+- Promotion to final tag is done by digest (`az acr import`) to avoid rebuilding.
+- Requires: Azure CLI (`az`) login, Docker Buildx, and access to the target ACR.
+
+## Go implementation for conditional ACR push
+
+You can run this locally or in CI:
+
+- Go entry point: `cmd/acr-push-if-changed/main.go`
+- Workflow integration: `.github/workflows/component-versions.yml`
+
+Local example:
+
+```bash
+go run ./cmd/acr-push-if-changed \
+	-acr-name <acr-name> \
+	-repository docker-component-version-test \
+	-tag alpine \
+	-target release-alpine \
+	-platform linux/amd64 \
+	-test-cmd "go test ./..."
+```
+
+GitHub Actions setup:
+
+- Configure repository secret `AZURE_CREDENTIALS` for `azure/login`.
+- Configure repository secret `ACR_NAME` (for example: `myregistry`).
+- Run workflow `Component Versions` from Actions tab.
+
+The workflow runs the Go script and follows the same behavior:
+
+- unchanged digest: prints and exits successfully.
+- changed digest: runs test command and publishes the new digest.
+
 ## GitHub Actions
 
 The workflow in `.github/workflows/component-versions.yml` can be run manually or
