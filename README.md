@@ -46,7 +46,7 @@ candidate digest:
 Notes:
 
 - The script uses a temporary candidate tag (`candidate-<timestamp>`) for digest comparison.
-- Promotion to final tag is done by digest (`az acr import`) to avoid rebuilding.
+- Promotion to final tag is done by digest (`docker buildx imagetools create`) to avoid rebuilding.
 - Requires: Azure CLI (`az`) login, Docker Buildx, and access to the target ACR.
 
 ## Go implementation for conditional ACR push
@@ -62,8 +62,8 @@ Local example:
 go run ./cmd/acr-push-if-changed \
 	-acr-name <acr-name> \
 	-repository docker-component-version-test \
-	-tag alpine \
-	-target release-alpine \
+	-tag 1.0 \
+	-target release-ubuntu \
 	-platform linux/amd64 \
 	-test-cmd "go test ./..."
 ```

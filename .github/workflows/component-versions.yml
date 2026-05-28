@@ -67,26 +67,14 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Conditional publish Alpine image to ACR
+      - name: Conditional publish default Ubuntu image to ACR (tag 1.0)
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: |
           go run ./cmd/acr-push-if-changed \
             -acr-name "$ACR_NAME" \
             -repository "docker-component-version-test" \
-            -tag "alpine" \
-            -target "release-alpine" \
-            -platform "linux/amd64" \
-            -test-cmd "go test ./..."
-
-      - name: Conditional publish Ubuntu image to ACR
-        env:
-          ACR_NAME: ${{ secrets.ACR_NAME }}
-        run: |
-          go run ./cmd/acr-push-if-changed \
-            -acr-name "$ACR_NAME" \
-            -repository "docker-component-version-test" \
-            -tag "ubuntu" \
+            -tag "1.0" \
             -target "release-ubuntu" \
             -platform "linux/amd64" \
             -test-cmd "go test ./..."

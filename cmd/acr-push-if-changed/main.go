@@ -42,8 +42,8 @@ func parseFlags() config {
 
 	flag.StringVar(&cfg.acrName, "acr-name", "", "ACR name (required)")
 	flag.StringVar(&cfg.repository, "repository", "", "Image repository name (required)")
-	flag.StringVar(&cfg.tag, "tag", "alpine", "Release tag to compare and publish")
-	flag.StringVar(&cfg.target, "target", "release-alpine", "Docker build target stage")
+	flag.StringVar(&cfg.tag, "tag", "1.0", "Release tag to compare and publish")
+	flag.StringVar(&cfg.target, "target", "release-ubuntu", "Docker build target stage")
 	flag.StringVar(&cfg.platform, "platform", "linux/amd64", "Docker build platform")
 	flag.StringVar(&cfg.buildContext, "build-context", ".", "Docker build context")
 	flag.StringVar(&cfg.testCmd, "test-cmd", "go test ./...", "Test command executed when digest changed")
@@ -123,7 +123,7 @@ func run(cfg config) error {
 	}
 
 	fmt.Printf("=== Promote candidate digest to release tag: %s ===\n", imageRef)
-	if _, err := runCommand("az", "acr", "import", "--name", normalizedAcrName, "--source", fmt.Sprintf("%s/%s@%s", loginServer, cfg.repository, newDigest), "--image", fmt.Sprintf("%s:%s", cfg.repository, cfg.tag), "--force"); err != nil {
+	if _, err := runCommand("docker", "buildx", "imagetools", "create", "--tag", imageRef, fmt.Sprintf("%s/%s@%s", loginServer, cfg.repository, newDigest)); err != nil {
 		return err
 	}
 
