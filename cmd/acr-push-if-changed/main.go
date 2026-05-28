@@ -111,9 +111,7 @@ func run(cfg config) error {
 
 	if oldDigest != "" && oldDigest == newDigest {
 		fmt.Println("Digest unchanged. Skip tests and publish.")
-		if _, err := runCommand("az", "acr", "repository", "untag", "--name", normalizedAcrName, "--image", fmt.Sprintf("%s:%s", cfg.repository, candidateTag)); err != nil {
-			return err
-		}
+		cleanupCandidateTag(normalizedAcrName, cfg.repository, candidateTag)
 		return nil
 	}
 
@@ -127,13 +125,17 @@ func run(cfg config) error {
 		return err
 	}
 
-	fmt.Println("=== Cleanup candidate tag ===")
-	if _, err := runCommand("az", "acr", "repository", "untag", "--name", normalizedAcrName, "--image", fmt.Sprintf("%s:%s", cfg.repository, candidateTag)); err != nil {
-		return err
-	}
+	cleanupCandidateTag(normalizedAcrName, cfg.repository, candidateTag)
 
 	fmt.Println("Done. New digest published successfully.")
 	return nil
+}
+
+func cleanupCandidateTag(acrName, repository, candidateTag string) {
+	fmt.Println("=== Cleanup candidate tag (best effort) ===")
+	if _, err := runCommand("az", "acr", "repository", "untag", "--name", acrName, "--image", fmt.Sprintf("%s:%s", repository, candidateTag)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cleanup failed for %s:%s: %v\n", repository, candidateTag, err)
+	}
 }
 
 func normalizeAcrName(raw string) (string, error) {
@@ -153,7 +155,7 @@ func normalizeAcrName(raw string) (string, error) {
 }
 
 func getTagDigest(acrName, repository, tag string) (string, error) {
-	out, err := runCommand("az", "acr", "repository", "show-manifests", "--name", acrName, "--repository", repository, "--orderby", "time_desc", "-o", "json")
+	out, err := runCommandSilent("az", "acr", "repository", "show-manifests", "--name", acrName, "--repository", repository, "--orderby", "time_desc", "-o", "json")
 	if err != nil {
 		if strings.Contains(err.Error(), "NOT_FOUND") || strings.Contains(err.Error(), "repository") {
 			return "", nil
@@ -215,6 +217,23 @@ func runCommand(name string, args ...string) (string, error) {
 	if out != "" {
 		fmt.Print(out)
 	}
+	if err != nil {
+		return out, fmt.Errorf("command failed: %s %s: %w\n%s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+
+	return out, nil
+}
+
+func runCommandSilent(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	out := stdout.String()
 	if err != nil {
 		return out, fmt.Errorf("command failed: %s %s: %w\n%s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
