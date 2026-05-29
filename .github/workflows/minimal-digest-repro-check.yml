@@ -7,10 +7,14 @@ on:
         description: ACR repository for minimal reproducibility test
         required: true
         default: docker-component-version-test-minimal-repro
+      publish_tag:
+        description: Tag to update when digest changed
+        required: true
+        default: latest
 
 jobs:
   repro-check:
-    name: Push twice and compare ACR digest
+    name: Compare latest digest and conditionally publish
     runs-on: ubuntu-latest
 
     steps:
@@ -44,24 +48,39 @@ jobs:
           ACR_NAME=$(echo "$ACR_NAME_RAW" | tr '[:upper:]' '[:lower:]' | sed -e 's#^https\?://##' -e 's#/.*$##' -e 's#\.azurecr\.io$##' -e "s/[\"']//g" | xargs)
           ACR_LOGIN_SERVER="$ACR_NAME.azurecr.io"
           ACR_REPOSITORY="${{ inputs.acr_repository }}"
+          PUBLISH_TAG="${{ inputs.publish_tag }}"
           TAG_PREFIX="repro-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          TAG_1="${TAG_PREFIX}-first"
-          TAG_2="${TAG_PREFIX}-second"
+          CANDIDATE_TAG="${TAG_PREFIX}-candidate"
 
           az acr login --name "$ACR_NAME"
+
+          LATEST_DIGEST=$(az acr repository show-manifests \
+            --name "$ACR_NAME" \
+            --repository "$ACR_REPOSITORY" \
+            --orderby time_desc \
+            --query "[0].digest" \
+            -o tsv 2>/dev/null || true)
+
+          if [ -n "$LATEST_DIGEST" ] && [ "$LATEST_DIGEST" != "None" ]; then
+            echo "LATEST_DIGEST=$LATEST_DIGEST" >> "$GITHUB_ENV"
+            echo "Existing latest digest in repo: $LATEST_DIGEST"
+          else
+            echo "LATEST_DIGEST=" >> "$GITHUB_ENV"
+            echo "Existing latest digest in repo: <none>"
+          fi
 
           echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
           echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
           echo "ACR_REPOSITORY=$ACR_REPOSITORY" >> "$GITHUB_ENV"
-          echo "TAG_1=$TAG_1" >> "$GITHUB_ENV"
-          echo "TAG_2=$TAG_2" >> "$GITHUB_ENV"
+          echo "PUBLISH_TAG=$PUBLISH_TAG" >> "$GITHUB_ENV"
+          echo "CANDIDATE_TAG=$CANDIDATE_TAG" >> "$GITHUB_ENV"
 
           echo "Using registry: $ACR_LOGIN_SERVER"
           echo "Using repository: $ACR_REPOSITORY"
-          echo "Tag #1: $TAG_1"
-          echo "Tag #2: $TAG_2"
+          echo "Publish tag: $PUBLISH_TAG"
+          echo "Candidate tag: $CANDIDATE_TAG"
 
-      - name: First build and push
+      - name: Build current image and push candidate
         run: |
           set -euo pipefail
           docker buildx build \
@@ -69,81 +88,65 @@ jobs:
             --provenance=false \
             --sbom=false \
             --file Dockerfile.minimal-repro \
-            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$TAG_1" \
+            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$CANDIDATE_TAG" \
             --push \
             .
 
-          DIGEST_1=$(az acr repository show-manifests \
+          CANDIDATE_DIGEST=$(az acr repository show-manifests \
             --name "$ACR_NAME" \
             --repository "$ACR_REPOSITORY" \
             --orderby time_desc \
-            --query "[?tags!=null && contains(tags, '$TAG_1')].digest | [0]" \
+            --query "[?tags!=null && contains(tags, '$CANDIDATE_TAG')].digest | [0]" \
             -o tsv)
 
-          if [ -z "$DIGEST_1" ]; then
-            echo "Cannot find digest for tag $TAG_1"
+          if [ -z "$CANDIDATE_DIGEST" ]; then
+            echo "Cannot find digest for candidate tag $CANDIDATE_TAG"
             exit 1
           fi
 
-          echo "DIGEST_1=$DIGEST_1" >> "$GITHUB_ENV"
-          echo "Digest #1: $DIGEST_1"
+          echo "CANDIDATE_DIGEST=$CANDIDATE_DIGEST" >> "$GITHUB_ENV"
+          echo "Current build digest: $CANDIDATE_DIGEST"
 
-      - name: Second build and push
+      - name: Compare with existing latest digest
         run: |
           set -euo pipefail
-          docker buildx build \
-            --progress=plain \
-            --provenance=false \
-            --sbom=false \
-            --file Dockerfile.minimal-repro \
-            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$TAG_2" \
-            --push \
-            .
-
-          DIGEST_2=$(az acr repository show-manifests \
-            --name "$ACR_NAME" \
-            --repository "$ACR_REPOSITORY" \
-            --orderby time_desc \
-            --query "[?tags!=null && contains(tags, '$TAG_2')].digest | [0]" \
-            -o tsv)
-
-          if [ -z "$DIGEST_2" ]; then
-            echo "Cannot find digest for tag $TAG_2"
-            exit 1
-          fi
-
-          echo "DIGEST_2=$DIGEST_2" >> "$GITHUB_ENV"
-          echo "Digest #2: $DIGEST_2"
-
-      - name: Compare results
-        run: |
-          set -euo pipefail
-          echo "Digest #1: $DIGEST_1"
-          echo "Digest #2: $DIGEST_2"
-
           {
             echo "## Minimal Digest Repro Check"
             echo ""
             echo "- Registry: $ACR_LOGIN_SERVER"
             echo "- Repository: $ACR_REPOSITORY"
-            echo "- Tag #1: $TAG_1"
-            echo "- Tag #2: $TAG_2"
-            echo "- Digest #1: $DIGEST_1"
-            echo "- Digest #2: $DIGEST_2"
+            echo "- Publish tag: $PUBLISH_TAG"
+            echo "- Existing latest digest: ${LATEST_DIGEST:-<none>}"
+            echo "- Current build digest: $CANDIDATE_DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$DIGEST_1" = "$DIGEST_2" ]; then
-            echo "Result: identical digests (stable in this minimal ACR scenario)."
-            echo "- Result: identical digests" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${LATEST_DIGEST:-}" ] && [ "$LATEST_DIGEST" = "$CANDIDATE_DIGEST" ]; then
+            echo "Result: 相同的 digest 存在，跳过发布。"
+            echo "- Result: 相同的 digest 存在，跳过发布" >> "$GITHUB_STEP_SUMMARY"
+            echo "SHOULD_PUBLISH=false" >> "$GITHUB_ENV"
           else
-            echo "Result: different digests (not reproducible yet)."
-            echo "- Result: different digests" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: digest 不同，执行发布。"
+            echo "- Result: digest 不同，执行发布" >> "$GITHUB_STEP_SUMMARY"
+            echo "SHOULD_PUBLISH=true" >> "$GITHUB_ENV"
           fi
+
+      - name: Publish release tag when digest changed
+        if: env.SHOULD_PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$PUBLISH_TAG" \
+            "$ACR_LOGIN_SERVER/$ACR_REPOSITORY@$CANDIDATE_DIGEST"
+
+          echo "Published tag: $ACR_REPOSITORY:$PUBLISH_TAG -> $CANDIDATE_DIGEST"
+
+          {
+            echo "- Published: $ACR_REPOSITORY:$PUBLISH_TAG"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup temporary tags (best effort)
         if: always()
         run: |
           set +e
-          az acr repository untag --name "$ACR_NAME" --image "$ACR_REPOSITORY:$TAG_1"
-          az acr repository untag --name "$ACR_NAME" --image "$ACR_REPOSITORY:$TAG_2"
+          az acr repository untag --name "$ACR_NAME" --image "$ACR_REPOSITORY:$CANDIDATE_TAG"
           exit 0
