@@ -121,12 +121,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ -n "${LATEST_DIGEST:-}" ] && [ "$LATEST_DIGEST" = "$CANDIDATE_DIGEST" ]; then
-            echo "Result: 相同的 digest 存在，跳过发布。"
-            echo "- Result: 相同的 digest 存在，跳过发布" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: identical digest exists, skip publishing."
+            echo "- Result: identical digest exists, skip publishing" >> "$GITHUB_STEP_SUMMARY"
             echo "SHOULD_PUBLISH=false" >> "$GITHUB_ENV"
           else
-            echo "Result: digest 不同，执行发布。"
-            echo "- Result: digest 不同，执行发布" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: digests differ, proceed with publishing."
+            echo "- Result: digests differ, proceed with publishing" >> "$GITHUB_STEP_SUMMARY"
             echo "SHOULD_PUBLISH=true" >> "$GITHUB_ENV"
           fi
 
