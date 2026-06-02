@@ -246,10 +246,26 @@ jobs:
           if [ -n "${CURRENT_DIGEST:-}" ] && [ "$CURRENT_DIGEST" = "$NEXT_DIGEST" ]; then
             echo "Result: current and next digest are identical."
             echo "- Result: current and next digest are identical" >> "$GITHUB_STEP_SUMMARY"
+            echo "SHOULD_RUN_TERRATEST=false" >> "$GITHUB_ENV"
           elif [ -n "${CURRENT_DIGEST:-}" ] && [ -n "${CURRENT_IMAGE_SIZE:-}" ] && [ -n "${NEXT_IMAGE_SIZE:-}" ] && [ "$CURRENT_IMAGE_SIZE" = "$NEXT_IMAGE_SIZE" ]; then
             echo "Result: digest changed but effective image size unchanged."
             echo "- Result: digest changed but effective image size unchanged" >> "$GITHUB_STEP_SUMMARY"
+            echo "SHOULD_RUN_TERRATEST=false" >> "$GITHUB_ENV"
+          elif [ -n "${CURRENT_DIGEST:-}" ] && [ -n "${CURRENT_IMAGE_SIZE:-}" ] && [ -n "${NEXT_IMAGE_SIZE:-}" ] && [ "$CURRENT_DIGEST" != "$NEXT_DIGEST" ] && [ "$CURRENT_IMAGE_SIZE" != "$NEXT_IMAGE_SIZE" ]; then
+            echo "Result: digest and effective image size both changed. Run terratest."
+            echo "- Result: digest and effective image size both changed (run terratest)" >> "$GITHUB_STEP_SUMMARY"
+            echo "SHOULD_RUN_TERRATEST=true" >> "$GITHUB_ENV"
           else
             echo "Result: digest/size indicate content change."
             echo "- Result: digest/size indicate content change" >> "$GITHUB_STEP_SUMMARY"
+            echo "SHOULD_RUN_TERRATEST=false" >> "$GITHUB_ENV"
           fi
+
+      - name: Run terratest for Ubuntu image tools
+        if: env.SHOULD_RUN_TERRATEST == 'true'
+        working-directory: terratest
+        env:
+          IMAGE_UNDER_TEST: ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPOSITORY }}:${{ env.NEXT_VERSION }}
+        run: |
+          set -euo pipefail
+          go test -v ./...
