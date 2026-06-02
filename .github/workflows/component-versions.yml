@@ -2,6 +2,11 @@ name: Component Versions and ACR Conditional Publish
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Optional next image version override (x.y.z)
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -70,45 +75,67 @@ jobs:
       - name: Prepare ACR context
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
+          INPUT_VERSION: ${{ github.event.inputs.version || '' }}
         run: |
           set -euo pipefail
           ACR_NAME_RAW="$ACR_NAME"
           ACR_NAME=$(echo "$ACR_NAME_RAW" | tr '[:upper:]' '[:lower:]' | sed -e 's#^https\?://##' -e 's#/.*$##' -e 's#\.azurecr\.io$##' -e "s/[\"']//g" | xargs)
           ACR_LOGIN_SERVER="$ACR_NAME.azurecr.io"
           ACR_REPOSITORY="docker-component-version-test"
-          PUBLISH_TAG="1.0"
-          TAG_PREFIX="component-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          CANDIDATE_TAG="${TAG_PREFIX}-candidate"
 
           az acr login --name "$ACR_NAME"
 
-          EXISTING_DIGEST=$(az acr manifest list-metadata \
+          TAGS=$(az acr repository show-tags \
+            --name "$ACR_NAME" \
+            --repository "$ACR_REPOSITORY" \
+            -o tsv 2>/dev/null || true)
+
+          CURRENT_VERSION=$(printf '%s\n' "$TAGS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            NEXT_VERSION="$INPUT_VERSION"
+            if ! echo "$NEXT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "Invalid input version: $NEXT_VERSION. Expected x.y.z"
+              exit 1
+            fi
+          elif [ -z "$CURRENT_VERSION" ]; then
+            NEXT_VERSION="0.1.0"
+          else
+            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+            NEXT_VERSION="$major.$minor.$((patch + 1))"
+          fi
+
+          CURRENT_DIGEST=$(az acr manifest list-metadata \
             --registry "$ACR_NAME" \
             --name "$ACR_REPOSITORY" \
             --orderby time_desc \
-            --query "[?tags!=null && contains(tags, '$PUBLISH_TAG')].digest | [0]" \
+            --query "[?tags!=null && contains(tags, '$CURRENT_VERSION')].digest | [0]" \
             -o tsv 2>/dev/null || true)
 
-          if [ -n "$EXISTING_DIGEST" ] && [ "$EXISTING_DIGEST" != "None" ]; then
-            echo "EXISTING_DIGEST=$EXISTING_DIGEST" >> "$GITHUB_ENV"
-            echo "Existing digest for $PUBLISH_TAG: $EXISTING_DIGEST"
+          if [ -n "$CURRENT_DIGEST" ] && [ "$CURRENT_DIGEST" != "None" ]; then
+            echo "CURRENT_DIGEST=$CURRENT_DIGEST" >> "$GITHUB_ENV"
+            echo "Current digest for $CURRENT_VERSION: $CURRENT_DIGEST"
           else
-            echo "EXISTING_DIGEST=" >> "$GITHUB_ENV"
-            echo "Existing digest for $PUBLISH_TAG: <none>"
+            echo "CURRENT_DIGEST=" >> "$GITHUB_ENV"
+            if [ -n "$CURRENT_VERSION" ]; then
+              echo "Current digest for $CURRENT_VERSION: <none>"
+            else
+              echo "Current version: <none>"
+            fi
           fi
 
           echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
           echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> "$GITHUB_ENV"
           echo "ACR_REPOSITORY=$ACR_REPOSITORY" >> "$GITHUB_ENV"
-          echo "PUBLISH_TAG=$PUBLISH_TAG" >> "$GITHUB_ENV"
-          echo "CANDIDATE_TAG=$CANDIDATE_TAG" >> "$GITHUB_ENV"
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> "$GITHUB_ENV"
+          echo "NEXT_VERSION=$NEXT_VERSION" >> "$GITHUB_ENV"
 
           echo "Using registry: $ACR_LOGIN_SERVER"
           echo "Using repository: $ACR_REPOSITORY"
-          echo "Publish tag: $PUBLISH_TAG"
-          echo "Candidate tag: $CANDIDATE_TAG"
+          echo "Current version: ${CURRENT_VERSION:-<none>}"
+          echo "Next version: $NEXT_VERSION"
 
-      - name: Build current Ubuntu image and push candidate
+      - name: Build current Ubuntu image and push next version
         run: |
           set -euo pipefail
           docker buildx build \
@@ -116,26 +143,26 @@ jobs:
             --provenance=false \
             --sbom=false \
             --target release-ubuntu \
-            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$CANDIDATE_TAG" \
+            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$NEXT_VERSION" \
             --push \
             .
 
-          CANDIDATE_DIGEST=$(az acr manifest list-metadata \
+          NEXT_DIGEST=$(az acr manifest list-metadata \
             --registry "$ACR_NAME" \
             --name "$ACR_REPOSITORY" \
             --orderby time_desc \
-            --query "[?tags!=null && contains(tags, '$CANDIDATE_TAG')].digest | [0]" \
+            --query "[?tags!=null && contains(tags, '$NEXT_VERSION')].digest | [0]" \
             -o tsv)
 
-          if [ -z "$CANDIDATE_DIGEST" ]; then
-            echo "Cannot find digest for candidate tag $CANDIDATE_TAG"
+          if [ -z "$NEXT_DIGEST" ]; then
+            echo "Cannot find digest for next version tag $NEXT_VERSION"
             exit 1
           fi
 
-          echo "CANDIDATE_DIGEST=$CANDIDATE_DIGEST" >> "$GITHUB_ENV"
-          echo "Current build digest: $CANDIDATE_DIGEST"
+          echo "NEXT_DIGEST=$NEXT_DIGEST" >> "$GITHUB_ENV"
+          echo "Next build digest: $NEXT_DIGEST"
 
-      - name: Compare with existing latest digest
+      - name: Compare current and next versions
         run: |
           set -euo pipefail
 
@@ -188,19 +215,19 @@ jobs:
             echo ""
           }
 
-          EXISTING_IMAGE_SIZE=$(resolve_effective_size "${EXISTING_DIGEST:-}")
-          CANDIDATE_IMAGE_SIZE=$(resolve_effective_size "$CANDIDATE_DIGEST")
+          CURRENT_IMAGE_SIZE=$(resolve_effective_size "${CURRENT_DIGEST:-}")
+          NEXT_IMAGE_SIZE=$(resolve_effective_size "$NEXT_DIGEST")
 
-          if [ -n "$EXISTING_IMAGE_SIZE" ]; then
-            echo "EXISTING_IMAGE_SIZE=$EXISTING_IMAGE_SIZE" >> "$GITHUB_ENV"
+          if [ -n "$CURRENT_IMAGE_SIZE" ]; then
+            echo "CURRENT_IMAGE_SIZE=$CURRENT_IMAGE_SIZE" >> "$GITHUB_ENV"
           else
-            echo "EXISTING_IMAGE_SIZE=" >> "$GITHUB_ENV"
+            echo "CURRENT_IMAGE_SIZE=" >> "$GITHUB_ENV"
           fi
 
-          if [ -n "$CANDIDATE_IMAGE_SIZE" ]; then
-            echo "CANDIDATE_IMAGE_SIZE=$CANDIDATE_IMAGE_SIZE" >> "$GITHUB_ENV"
+          if [ -n "$NEXT_IMAGE_SIZE" ]; then
+            echo "NEXT_IMAGE_SIZE=$NEXT_IMAGE_SIZE" >> "$GITHUB_ENV"
           else
-            echo "CANDIDATE_IMAGE_SIZE=" >> "$GITHUB_ENV"
+            echo "NEXT_IMAGE_SIZE=" >> "$GITHUB_ENV"
           fi
 
           {
@@ -208,44 +235,21 @@ jobs:
             echo ""
             echo "- Registry: $ACR_LOGIN_SERVER"
             echo "- Repository: $ACR_REPOSITORY"
-            echo "- Publish tag: $PUBLISH_TAG"
-            echo "- Existing digest: ${EXISTING_DIGEST:-<none>}"
-            echo "- Current build digest: $CANDIDATE_DIGEST"
-            echo "- Existing image size: ${EXISTING_IMAGE_SIZE:-<unknown>}"
-            echo "- Current build image size: ${CANDIDATE_IMAGE_SIZE:-<unknown>}"
+            echo "- Current version: ${CURRENT_VERSION:-<none>}"
+            echo "- Next version: $NEXT_VERSION"
+            echo "- Current digest: ${CURRENT_DIGEST:-<none>}"
+            echo "- Next digest: $NEXT_DIGEST"
+            echo "- Current image size: ${CURRENT_IMAGE_SIZE:-<unknown>}"
+            echo "- Next image size: ${NEXT_IMAGE_SIZE:-<unknown>}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ -n "${EXISTING_DIGEST:-}" ] && [ "$EXISTING_DIGEST" = "$CANDIDATE_DIGEST" ]; then
-            echo "Result: identical digest exists, skip publishing."
-            echo "- Result: identical digest exists, skip publishing" >> "$GITHUB_STEP_SUMMARY"
-            echo "SHOULD_PUBLISH=false" >> "$GITHUB_ENV"
-          elif [ -n "${EXISTING_DIGEST:-}" ] && [ -n "${EXISTING_IMAGE_SIZE:-}" ] && [ -n "${CANDIDATE_IMAGE_SIZE:-}" ] && [ "$EXISTING_IMAGE_SIZE" = "$CANDIDATE_IMAGE_SIZE" ]; then
-            echo "Result: digest changed but image size unchanged, skip publishing."
-            echo "- Result: digest changed but image size unchanged, skip publishing" >> "$GITHUB_STEP_SUMMARY"
-            echo "SHOULD_PUBLISH=false" >> "$GITHUB_ENV"
+          if [ -n "${CURRENT_DIGEST:-}" ] && [ "$CURRENT_DIGEST" = "$NEXT_DIGEST" ]; then
+            echo "Result: current and next digest are identical."
+            echo "- Result: current and next digest are identical" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "${CURRENT_DIGEST:-}" ] && [ -n "${CURRENT_IMAGE_SIZE:-}" ] && [ -n "${NEXT_IMAGE_SIZE:-}" ] && [ "$CURRENT_IMAGE_SIZE" = "$NEXT_IMAGE_SIZE" ]; then
+            echo "Result: digest changed but effective image size unchanged."
+            echo "- Result: digest changed but effective image size unchanged" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Result: digest/size indicate change, proceed with publishing."
-            echo "- Result: digest/size indicate change, proceed with publishing" >> "$GITHUB_STEP_SUMMARY"
-            echo "SHOULD_PUBLISH=true" >> "$GITHUB_ENV"
+            echo "Result: digest/size indicate content change."
+            echo "- Result: digest/size indicate content change" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-      - name: Publish release tag when digest changed
-        if: env.SHOULD_PUBLISH == 'true'
-        run: |
-          set -euo pipefail
-          docker buildx imagetools create \
-            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$PUBLISH_TAG" \
-            "$ACR_LOGIN_SERVER/$ACR_REPOSITORY@$CANDIDATE_DIGEST"
-
-          echo "Published tag: $ACR_REPOSITORY:$PUBLISH_TAG -> $CANDIDATE_DIGEST"
-
-          {
-            echo "- Published: $ACR_REPOSITORY:$PUBLISH_TAG"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Cleanup temporary tags (best effort)
-        if: always()
-        run: |
-          set +e
-          az acr repository untag --name "$ACR_NAME" --image "$ACR_REPOSITORY:$CANDIDATE_TAG"
-          exit 0
