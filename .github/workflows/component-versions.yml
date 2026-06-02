@@ -82,19 +82,33 @@ jobs:
 
           az acr login --name "$ACR_NAME"
 
-          LATEST_DIGEST=$(az acr repository show-manifests \
+          EXISTING_DIGEST=$(az acr repository show-manifests \
             --name "$ACR_NAME" \
             --repository "$ACR_REPOSITORY" \
             --orderby time_desc \
-            --query "[0].digest" \
+            --query "[?tags!=null && contains(tags, '$PUBLISH_TAG')].digest | [0]" \
             -o tsv 2>/dev/null || true)
 
-          if [ -n "$LATEST_DIGEST" ] && [ "$LATEST_DIGEST" != "None" ]; then
-            echo "LATEST_DIGEST=$LATEST_DIGEST" >> "$GITHUB_ENV"
-            echo "Existing latest digest in repo: $LATEST_DIGEST"
+          EXISTING_IMAGE_SIZE=$(az acr repository show \
+            --name "$ACR_NAME" \
+            --image "$ACR_REPOSITORY:$PUBLISH_TAG" \
+            --query "imageSize" \
+            -o tsv 2>/dev/null || true)
+
+          if [ -n "$EXISTING_DIGEST" ] && [ "$EXISTING_DIGEST" != "None" ]; then
+            echo "EXISTING_DIGEST=$EXISTING_DIGEST" >> "$GITHUB_ENV"
+            echo "Existing digest for $PUBLISH_TAG: $EXISTING_DIGEST"
           else
-            echo "LATEST_DIGEST=" >> "$GITHUB_ENV"
-            echo "Existing latest digest in repo: <none>"
+            echo "EXISTING_DIGEST=" >> "$GITHUB_ENV"
+            echo "Existing digest for $PUBLISH_TAG: <none>"
+          fi
+
+          if [ -n "$EXISTING_IMAGE_SIZE" ] && [ "$EXISTING_IMAGE_SIZE" != "None" ]; then
+            echo "EXISTING_IMAGE_SIZE=$EXISTING_IMAGE_SIZE" >> "$GITHUB_ENV"
+            echo "Existing image size for $PUBLISH_TAG: $EXISTING_IMAGE_SIZE"
+          else
+            echo "EXISTING_IMAGE_SIZE=" >> "$GITHUB_ENV"
+            echo "Existing image size for $PUBLISH_TAG: <unknown>"
           fi
 
           echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
@@ -132,7 +146,20 @@ jobs:
             exit 1
           fi
 
+          CANDIDATE_IMAGE_SIZE=$(az acr repository show \
+            --name "$ACR_NAME" \
+            --image "$ACR_REPOSITORY:$CANDIDATE_TAG" \
+            --query "imageSize" \
+            -o tsv 2>/dev/null || true)
+
           echo "CANDIDATE_DIGEST=$CANDIDATE_DIGEST" >> "$GITHUB_ENV"
+          if [ -n "$CANDIDATE_IMAGE_SIZE" ] && [ "$CANDIDATE_IMAGE_SIZE" != "None" ]; then
+            echo "CANDIDATE_IMAGE_SIZE=$CANDIDATE_IMAGE_SIZE" >> "$GITHUB_ENV"
+            echo "Current build image size: $CANDIDATE_IMAGE_SIZE"
+          else
+            echo "CANDIDATE_IMAGE_SIZE=" >> "$GITHUB_ENV"
+            echo "Current build image size: <unknown>"
+          fi
           echo "Current build digest: $CANDIDATE_DIGEST"
 
       - name: Compare with existing latest digest
@@ -144,17 +171,23 @@ jobs:
             echo "- Registry: $ACR_LOGIN_SERVER"
             echo "- Repository: $ACR_REPOSITORY"
             echo "- Publish tag: $PUBLISH_TAG"
-            echo "- Existing latest digest: ${LATEST_DIGEST:-<none>}"
+            echo "- Existing digest: ${EXISTING_DIGEST:-<none>}"
             echo "- Current build digest: $CANDIDATE_DIGEST"
+            echo "- Existing image size: ${EXISTING_IMAGE_SIZE:-<unknown>}"
+            echo "- Current build image size: ${CANDIDATE_IMAGE_SIZE:-<unknown>}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ -n "${LATEST_DIGEST:-}" ] && [ "$LATEST_DIGEST" = "$CANDIDATE_DIGEST" ]; then
+          if [ -n "${EXISTING_DIGEST:-}" ] && [ "$EXISTING_DIGEST" = "$CANDIDATE_DIGEST" ]; then
             echo "Result: identical digest exists, skip publishing."
             echo "- Result: identical digest exists, skip publishing" >> "$GITHUB_STEP_SUMMARY"
             echo "SHOULD_PUBLISH=false" >> "$GITHUB_ENV"
+          elif [ -n "${EXISTING_DIGEST:-}" ] && [ -n "${EXISTING_IMAGE_SIZE:-}" ] && [ -n "${CANDIDATE_IMAGE_SIZE:-}" ] && [ "$EXISTING_IMAGE_SIZE" = "$CANDIDATE_IMAGE_SIZE" ]; then
+            echo "Result: digest changed but image size unchanged, skip publishing."
+            echo "- Result: digest changed but image size unchanged, skip publishing" >> "$GITHUB_STEP_SUMMARY"
+            echo "SHOULD_PUBLISH=false" >> "$GITHUB_ENV"
           else
-            echo "Result: digests differ, proceed with publishing."
-            echo "- Result: digests differ, proceed with publishing" >> "$GITHUB_STEP_SUMMARY"
+            echo "Result: digest/size indicate change, proceed with publishing."
+            echo "- Result: digest/size indicate change, proceed with publishing" >> "$GITHUB_STEP_SUMMARY"
             echo "SHOULD_PUBLISH=true" >> "$GITHUB_ENV"
           fi
 
