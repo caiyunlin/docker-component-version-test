@@ -89,10 +89,11 @@ jobs:
             --query "[?tags!=null && contains(tags, '$PUBLISH_TAG')].digest | [0]" \
             -o tsv 2>/dev/null || true)
 
-          EXISTING_IMAGE_SIZE=$(az acr repository show \
+          EXISTING_IMAGE_SIZE=$(az acr repository show-manifests \
             --name "$ACR_NAME" \
-            --image "$ACR_REPOSITORY:$PUBLISH_TAG" \
-            --query "imageSize" \
+            --repository "$ACR_REPOSITORY" \
+            --orderby time_desc \
+            --query "[?tags!=null && contains(tags, '$PUBLISH_TAG')].imageSize | [0]" \
             -o tsv 2>/dev/null || true)
 
           if [ -n "$EXISTING_DIGEST" ] && [ "$EXISTING_DIGEST" != "None" ]; then
@@ -146,10 +147,11 @@ jobs:
             exit 1
           fi
 
-          CANDIDATE_IMAGE_SIZE=$(az acr repository show \
+          CANDIDATE_IMAGE_SIZE=$(az acr repository show-manifests \
             --name "$ACR_NAME" \
-            --image "$ACR_REPOSITORY:$CANDIDATE_TAG" \
-            --query "imageSize" \
+            --repository "$ACR_REPOSITORY" \
+            --orderby time_desc \
+            --query "[?tags!=null && contains(tags, '$CANDIDATE_TAG')].imageSize | [0]" \
             -o tsv 2>/dev/null || true)
 
           echo "CANDIDATE_DIGEST=$CANDIDATE_DIGEST" >> "$GITHUB_ENV"
