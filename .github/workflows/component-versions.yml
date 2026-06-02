@@ -82,18 +82,11 @@ jobs:
 
           az acr login --name "$ACR_NAME"
 
-          EXISTING_DIGEST=$(az acr repository show-manifests \
-            --name "$ACR_NAME" \
-            --repository "$ACR_REPOSITORY" \
+          EXISTING_DIGEST=$(az acr manifest list-metadata \
+            --registry "$ACR_NAME" \
+            --name "$ACR_REPOSITORY" \
             --orderby time_desc \
             --query "[?tags!=null && contains(tags, '$PUBLISH_TAG')].digest | [0]" \
-            -o tsv 2>/dev/null || true)
-
-          EXISTING_IMAGE_SIZE=$(az acr repository show-manifests \
-            --name "$ACR_NAME" \
-            --repository "$ACR_REPOSITORY" \
-            --orderby time_desc \
-            --query "[?tags!=null && contains(tags, '$PUBLISH_TAG')].imageSize | [0]" \
             -o tsv 2>/dev/null || true)
 
           if [ -n "$EXISTING_DIGEST" ] && [ "$EXISTING_DIGEST" != "None" ]; then
@@ -102,14 +95,6 @@ jobs:
           else
             echo "EXISTING_DIGEST=" >> "$GITHUB_ENV"
             echo "Existing digest for $PUBLISH_TAG: <none>"
-          fi
-
-          if [ -n "$EXISTING_IMAGE_SIZE" ] && [ "$EXISTING_IMAGE_SIZE" != "None" ]; then
-            echo "EXISTING_IMAGE_SIZE=$EXISTING_IMAGE_SIZE" >> "$GITHUB_ENV"
-            echo "Existing image size for $PUBLISH_TAG: $EXISTING_IMAGE_SIZE"
-          else
-            echo "EXISTING_IMAGE_SIZE=" >> "$GITHUB_ENV"
-            echo "Existing image size for $PUBLISH_TAG: <unknown>"
           fi
 
           echo "ACR_NAME=$ACR_NAME" >> "$GITHUB_ENV"
@@ -135,9 +120,9 @@ jobs:
             --push \
             .
 
-          CANDIDATE_DIGEST=$(az acr repository show-manifests \
-            --name "$ACR_NAME" \
-            --repository "$ACR_REPOSITORY" \
+          CANDIDATE_DIGEST=$(az acr manifest list-metadata \
+            --registry "$ACR_NAME" \
+            --name "$ACR_REPOSITORY" \
             --orderby time_desc \
             --query "[?tags!=null && contains(tags, '$CANDIDATE_TAG')].digest | [0]" \
             -o tsv)
@@ -147,26 +132,77 @@ jobs:
             exit 1
           fi
 
-          CANDIDATE_IMAGE_SIZE=$(az acr repository show-manifests \
-            --name "$ACR_NAME" \
-            --repository "$ACR_REPOSITORY" \
-            --orderby time_desc \
-            --query "[?tags!=null && contains(tags, '$CANDIDATE_TAG')].imageSize | [0]" \
-            -o tsv 2>/dev/null || true)
-
           echo "CANDIDATE_DIGEST=$CANDIDATE_DIGEST" >> "$GITHUB_ENV"
-          if [ -n "$CANDIDATE_IMAGE_SIZE" ] && [ "$CANDIDATE_IMAGE_SIZE" != "None" ]; then
-            echo "CANDIDATE_IMAGE_SIZE=$CANDIDATE_IMAGE_SIZE" >> "$GITHUB_ENV"
-            echo "Current build image size: $CANDIDATE_IMAGE_SIZE"
-          else
-            echo "CANDIDATE_IMAGE_SIZE=" >> "$GITHUB_ENV"
-            echo "Current build image size: <unknown>"
-          fi
           echo "Current build digest: $CANDIDATE_DIGEST"
 
       - name: Compare with existing latest digest
         run: |
           set -euo pipefail
+
+          resolve_effective_size() {
+            local digest="$1"
+            local direct_size
+            local media_type
+            local child_size
+
+            direct_size=$(az acr manifest list-metadata \
+              --registry "$ACR_NAME" \
+              --name "$ACR_REPOSITORY" \
+              --orderby time_desc \
+              --query "[?digest=='$digest'].imageSize | [0]" \
+              -o tsv 2>/dev/null || true)
+
+            media_type=$(az acr manifest list-metadata \
+              --registry "$ACR_NAME" \
+              --name "$ACR_REPOSITORY" \
+              --orderby time_desc \
+              --query "[?digest=='$digest'].mediaType | [0]" \
+              -o tsv 2>/dev/null || true)
+
+            if [ -n "$direct_size" ] && [ "$direct_size" != "None" ] && [ "$direct_size" != "0" ]; then
+              echo "$direct_size"
+              return 0
+            fi
+
+            if [ "$media_type" = "application/vnd.docker.distribution.manifest.list.v2+json" ] || [ "$media_type" = "application/vnd.oci.image.index.v1+json" ]; then
+              child_size=$(az acr manifest show \
+                --registry "$ACR_NAME" \
+                --name "$ACR_REPOSITORY@$digest" \
+                --query "manifests[?platform.os=='linux' && platform.architecture=='amd64'].size | [0]" \
+                -o tsv 2>/dev/null || true)
+
+              if [ -z "$child_size" ] || [ "$child_size" = "None" ]; then
+                child_size=$(az acr manifest show \
+                  --registry "$ACR_NAME" \
+                  --name "$ACR_REPOSITORY@$digest" \
+                  --query "manifests[0].size" \
+                  -o tsv 2>/dev/null || true)
+              fi
+
+              if [ -n "$child_size" ] && [ "$child_size" != "None" ]; then
+                echo "$child_size"
+                return 0
+              fi
+            fi
+
+            echo ""
+          }
+
+          EXISTING_IMAGE_SIZE=$(resolve_effective_size "${EXISTING_DIGEST:-}")
+          CANDIDATE_IMAGE_SIZE=$(resolve_effective_size "$CANDIDATE_DIGEST")
+
+          if [ -n "$EXISTING_IMAGE_SIZE" ]; then
+            echo "EXISTING_IMAGE_SIZE=$EXISTING_IMAGE_SIZE" >> "$GITHUB_ENV"
+          else
+            echo "EXISTING_IMAGE_SIZE=" >> "$GITHUB_ENV"
+          fi
+
+          if [ -n "$CANDIDATE_IMAGE_SIZE" ]; then
+            echo "CANDIDATE_IMAGE_SIZE=$CANDIDATE_IMAGE_SIZE" >> "$GITHUB_ENV"
+          else
+            echo "CANDIDATE_IMAGE_SIZE=" >> "$GITHUB_ENV"
+          fi
+
           {
             echo "## Component Versions ACR Publish"
             echo ""
