@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"strconv"
 	"os"
 	"os/exec"
 	"runtime"
@@ -115,7 +116,38 @@ func run(cfg config) error {
 		return nil
 	}
 
-	fmt.Println("Digest changed. Execute test phase.")
+	if oldDigest != "" {
+		fmt.Println("Digest changed. Compare image size as secondary check.")
+
+		oldSize, oldSizeKnown, oldSizeErr := getTagImageSize(normalizedAcrName, cfg.repository, cfg.tag)
+		newSize, newSizeKnown, newSizeErr := getTagImageSize(normalizedAcrName, cfg.repository, candidateTag)
+
+		if oldSizeErr == nil && oldSizeKnown {
+			fmt.Printf("Existing image size: %d bytes\n", oldSize)
+		} else if oldSizeErr == nil {
+			fmt.Println("Existing image size: <unknown>")
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: cannot resolve existing image size: %v\n", oldSizeErr)
+		}
+		if newSizeErr == nil && newSizeKnown {
+			fmt.Printf("Candidate image size: %d bytes\n", newSize)
+		} else if newSizeErr == nil {
+			fmt.Println("Candidate image size: <unknown>")
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: cannot resolve candidate image size: %v\n", newSizeErr)
+		}
+
+		if oldSizeErr == nil && newSizeErr == nil && oldSizeKnown && newSizeKnown && oldSize == newSize {
+			fmt.Println("Digest changed but image size unchanged. Treat as unchanged and skip tests/publish.")
+			cleanupCandidateTag(normalizedAcrName, cfg.repository, candidateTag)
+			return nil
+		}
+
+		fmt.Println("Digest and image size indicate changes. Execute test phase.")
+	} else {
+		fmt.Println("No existing digest found. Execute test phase.")
+	}
+
 	if _, err := runShellCommand(cfg.testCmd); err != nil {
 		return err
 	}
@@ -177,6 +209,28 @@ func getTagDigest(acrName, repository, tag string) (string, error) {
 	}
 
 	return "", nil
+}
+
+func getTagImageSize(acrName, repository, tag string) (int64, bool, error) {
+	out, err := runCommandSilent("az", "acr", "repository", "show", "--name", acrName, "--image", fmt.Sprintf("%s:%s", repository, tag), "--query", "imageSize", "-o", "tsv")
+	if err != nil {
+		if strings.Contains(err.Error(), "NOT_FOUND") || strings.Contains(err.Error(), "repository") || strings.Contains(err.Error(), "manifest") {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+
+	sizeRaw := strings.TrimSpace(out)
+	if sizeRaw == "" {
+		return 0, false, nil
+	}
+
+	size, parseErr := strconv.ParseInt(sizeRaw, 10, 64)
+	if parseErr != nil {
+		return 0, false, fmt.Errorf("invalid image size %q for %s:%s", sizeRaw, repository, tag)
+	}
+
+	return size, true, nil
 }
 
 func runShellCommand(command string) (string, error) {

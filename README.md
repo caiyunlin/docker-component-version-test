@@ -34,14 +34,14 @@ Run the Go application directly:
 go run .
 ```
 
-## Push to ACR only when digest changed
+## Push to ACR only when image content changed
 
 The Go tool below compares the current ACR tag digest with a newly built
-candidate digest:
+candidate digest, then applies a secondary size check when needed:
 
 - If digest is the same: print a message and exit.
-
-- If digest is different: run tests, then publish.
+- If digest is different and ACR image size is also different: run tests, then publish.
+- If digest is different but ACR image size is the same: treat as unchanged and exit.
 
 Notes:
 
@@ -77,7 +77,8 @@ GitHub Actions setup:
 The workflow runs the Go script and follows the same behavior:
 
 - unchanged digest: prints and exits successfully.
-- changed digest: runs test command and publishes the new digest.
+- changed digest + unchanged size: prints and exits successfully.
+- changed digest + changed size: runs test command and publishes the new digest.
 
 ## GitHub Actions
 
