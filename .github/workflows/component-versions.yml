@@ -168,16 +168,15 @@ jobs:
 
           resolve_effective_size() {
             local digest="$1"
-            local direct_size
             local media_type
+            local direct_size
+            local child_digest
             local child_size
 
-            direct_size=$(az acr manifest list-metadata \
-              --registry "$ACR_NAME" \
-              --name "$ACR_REPOSITORY" \
-              --orderby time_desc \
-              --query "[?digest=='$digest'].imageSize | [0]" \
-              -o tsv 2>/dev/null || true)
+            if [ -z "$digest" ]; then
+              echo ""
+              return 0
+            fi
 
             media_type=$(az acr manifest list-metadata \
               --registry "$ACR_NAME" \
@@ -186,30 +185,51 @@ jobs:
               --query "[?digest=='$digest'].mediaType | [0]" \
               -o tsv 2>/dev/null || true)
 
-            if [ -n "$direct_size" ] && [ "$direct_size" != "None" ] && [ "$direct_size" != "0" ]; then
-              echo "$direct_size"
-              return 0
-            fi
-
+            # If this is a manifest list / image index, resolve to the linux/amd64 child
+            # and report THAT child's imageSize (layers + config bytes). The top-level
+            # imageSize of an index is typically 0 / the index JSON size, which is useless
+            # for comparing actual image content.
             if [ "$media_type" = "application/vnd.docker.distribution.manifest.list.v2+json" ] || [ "$media_type" = "application/vnd.oci.image.index.v1+json" ]; then
-              child_size=$(az acr manifest show \
+              child_digest=$(az acr manifest show \
                 --registry "$ACR_NAME" \
                 --name "$ACR_REPOSITORY@$digest" \
-                --query "manifests[?platform.os=='linux' && platform.architecture=='amd64'].size | [0]" \
+                --query "manifests[?platform.os=='linux' && platform.architecture=='amd64'].digest | [0]" \
                 -o tsv 2>/dev/null || true)
 
-              if [ -z "$child_size" ] || [ "$child_size" = "None" ]; then
-                child_size=$(az acr manifest show \
+              if [ -z "$child_digest" ] || [ "$child_digest" = "None" ]; then
+                child_digest=$(az acr manifest show \
                   --registry "$ACR_NAME" \
                   --name "$ACR_REPOSITORY@$digest" \
-                  --query "manifests[0].size" \
+                  --query "manifests[0].digest" \
                   -o tsv 2>/dev/null || true)
               fi
 
-              if [ -n "$child_size" ] && [ "$child_size" != "None" ]; then
-                echo "$child_size"
-                return 0
+              if [ -n "$child_digest" ] && [ "$child_digest" != "None" ]; then
+                child_size=$(az acr manifest list-metadata \
+                  --registry "$ACR_NAME" \
+                  --name "$ACR_REPOSITORY" \
+                  --orderby time_desc \
+                  --query "[?digest=='$child_digest'].imageSize | [0]" \
+                  -o tsv 2>/dev/null || true)
+
+                if [ -n "$child_size" ] && [ "$child_size" != "None" ] && [ "$child_size" != "0" ]; then
+                  echo "$child_size"
+                  return 0
+                fi
               fi
+            fi
+
+            # Single-platform image: top-level imageSize is the real content size.
+            direct_size=$(az acr manifest list-metadata \
+              --registry "$ACR_NAME" \
+              --name "$ACR_REPOSITORY" \
+              --orderby time_desc \
+              --query "[?digest=='$digest'].imageSize | [0]" \
+              -o tsv 2>/dev/null || true)
+
+            if [ -n "$direct_size" ] && [ "$direct_size" != "None" ] && [ "$direct_size" != "0" ]; then
+              echo "$direct_size"
+              return 0
             fi
 
             echo ""
