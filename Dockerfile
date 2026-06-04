@@ -70,6 +70,7 @@ RUN apt-get update && \
         iputils-tracepath \
         lsof \
         nmap \
+        nginx \
         socat \
         sysstat \
         wget && \
@@ -112,9 +113,12 @@ RUN echo "======== Stage 3: Ubuntu Versions ========" && \
         iputils-tracepath \
         lsof \
         nmap \
+        nginx \
         socat \
         sysstat \
         wget && \
     echo "=========================================="
 
-CMD ["./main"]
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
