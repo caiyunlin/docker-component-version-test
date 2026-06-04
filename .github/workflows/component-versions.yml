@@ -281,11 +281,15 @@ jobs:
             echo "SHOULD_RUN_TERRATEST=false" >> "$GITHUB_ENV"
           fi
 
-      - name: Run terratest for Ubuntu image tools
+      - name: Update Container App to next ACR image (Go)
         if: env.SHOULD_RUN_TERRATEST == 'true'
-        working-directory: terratest
         env:
-          IMAGE_UNDER_TEST: ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPOSITORY }}:${{ env.NEXT_VERSION }}
+          ACA_NAME: docker-component-version-test
+          ACA_IMAGE: ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPOSITORY }}:${{ env.NEXT_VERSION }}
         run: |
           set -euo pipefail
-          go test -v ./...
+          go run ./cmd/update-containerapp-image
+
+      - name: Skip Container App update
+        if: env.SHOULD_RUN_TERRATEST != 'true'
+        run: echo "SHOULD_RUN_TERRATEST is not true; skip Container App image update."
