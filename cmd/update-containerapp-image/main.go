@@ -74,7 +74,7 @@ func discoverResourceGroup(acaName string) (string, error) {
 
 	resourceGroup := strings.TrimSpace(out)
 	if resourceGroup == "" || strings.EqualFold(resourceGroup, "none") {
-		return "", fmt.Errorf("cannot find resource group for container app %q", acaName)
+		return "", fmt.Errorf("cannot find resource group for container app %q (set ACA_RESOURCE_GROUP explicitly)", acaName)
 	}
 
 	return resourceGroup, nil

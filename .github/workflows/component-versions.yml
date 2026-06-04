@@ -285,6 +285,7 @@ jobs:
         if: env.SHOULD_RUN_TERRATEST == 'true'
         env:
           ACA_NAME: docker-component-version-test
+          ACA_RESOURCE_GROUP: ${{ vars.ACA_RESOURCE_GROUP || 'ACARG' }}
           ACA_IMAGE: ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPOSITORY }}:${{ env.NEXT_VERSION }}
         run: |
           set -euo pipefail
