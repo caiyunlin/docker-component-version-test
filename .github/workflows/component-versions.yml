@@ -281,6 +281,20 @@ jobs:
             echo "SHOULD_RUN_TERRATEST=false" >> "$GITHUB_ENV"
           fi
 
+      - name: Validate ACA access before update
+        if: env.SHOULD_RUN_TERRATEST == 'true'
+        env:
+          ACA_NAME: docker-component-version-test
+          ACA_RESOURCE_GROUP: ${{ vars.ACA_RESOURCE_GROUP || 'ACARG' }}
+        run: |
+          set -euo pipefail
+          az containerapp show \
+            --name "$ACA_NAME" \
+            --resource-group "$ACA_RESOURCE_GROUP" \
+            --query name \
+            -o tsv >/dev/null
+          echo "ACA access check passed for $ACA_NAME in $ACA_RESOURCE_GROUP"
+
       - name: Update Container App to next ACR image (Go)
         if: env.SHOULD_RUN_TERRATEST == 'true'
         env:
