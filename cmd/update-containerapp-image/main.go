@@ -20,6 +20,7 @@ func run() error {
 	acaName := strings.TrimSpace(os.Getenv("ACA_NAME"))
 	acaImage := strings.TrimSpace(os.Getenv("ACA_IMAGE"))
 	acaResourceGroup := strings.TrimSpace(os.Getenv("ACA_RESOURCE_GROUP"))
+	acaSubscriptionID := strings.TrimSpace(os.Getenv("ACA_SUBSCRIPTION_ID"))
 
 	if acaName == "" {
 		return errors.New("ACA_NAME is required")
@@ -28,12 +29,23 @@ func run() error {
 		return errors.New("ACA_IMAGE is required")
 	}
 
+	if acaSubscriptionID != "" {
+		fmt.Printf("Using subscription: %s\n", acaSubscriptionID)
+		if _, err := runCommand("az", "account", "set", "--subscription", acaSubscriptionID); err != nil {
+			return err
+		}
+	}
+
 	if acaResourceGroup == "" {
 		var err error
 		acaResourceGroup, err = discoverResourceGroup(acaName)
 		if err != nil {
 			return err
 		}
+	}
+
+	if err := ensureContainerAppExists(acaName, acaResourceGroup); err != nil {
+		return err
 	}
 
 	fmt.Printf("Updating Container App %q in resource group %q to image %q\n", acaName, acaResourceGroup, acaImage)
@@ -136,4 +148,38 @@ func runCommandSilent(name string, args ...string) (string, error) {
 	}
 
 	return stdout.String(), nil
+}
+
+func ensureContainerAppExists(acaName, acaResourceGroup string) error {
+	_, err := runCommandSilent("az", "containerapp", "show", "--name", acaName, "--resource-group", acaResourceGroup, "--query", "name", "-o", "tsv")
+	if err == nil {
+		return nil
+	}
+
+	accountInfo, accountErr := runCommandSilent("az", "account", "show", "--query", "{name:name,id:id,tenantId:tenantId}", "-o", "json")
+	if accountErr != nil {
+		accountInfo = "<cannot read az account context>"
+	} else {
+		accountInfo = strings.TrimSpace(accountInfo)
+	}
+
+	candidates, listErr := runCommandSilent("az", "containerapp", "list", "--resource-group", acaResourceGroup, "--query", "[].name", "-o", "tsv")
+	if listErr != nil {
+		candidates = "<cannot list container apps in resource group>"
+	} else {
+		candidates = strings.TrimSpace(candidates)
+		if candidates == "" {
+			candidates = "<none>"
+		}
+	}
+
+	return fmt.Errorf(
+		"container app %q not found in resource group %q\nCurrent Azure account context: %s\nContainer Apps in %q:\n%s\nOriginal error: %v",
+		acaName,
+		acaResourceGroup,
+		accountInfo,
+		acaResourceGroup,
+		candidates,
+		err,
+	)
 }

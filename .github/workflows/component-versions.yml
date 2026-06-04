@@ -286,6 +286,7 @@ jobs:
         env:
           ACA_NAME: docker-component-version-test
           ACA_RESOURCE_GROUP: ${{ vars.ACA_RESOURCE_GROUP || 'ACARG' }}
+          ACA_SUBSCRIPTION_ID: ${{ vars.ACA_SUBSCRIPTION_ID || '' }}
           ACA_IMAGE: ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_REPOSITORY }}:${{ env.NEXT_VERSION }}
         run: |
           set -euo pipefail
