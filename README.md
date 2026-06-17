@@ -36,18 +36,17 @@ go run .
 
 ## Push to ACR only when image content changed
 
-The Go tool below compares the current ACR tag digest with a newly built
-candidate digest, then applies a secondary size check when needed:
+The workflow now compares the local build result with the latest ACR release image
+before any push:
 
-- If digest is the same: print a message and exit.
-- If digest is different and ACR image size is also different: run tests, then publish.
-- If digest is different but ACR image size is the same: treat as unchanged and exit.
+- Build the Ubuntu release image locally.
+- Pull the current ACR version tag (latest semantic version) into the job.
+- Compare local image digest (`docker image inspect .Id`) and image size (`.Size`) with the pulled image.
+- If digest is the same: skip push.
+- If digest is different but size is the same: skip push.
+- Only when digest and size both indicate changes: push `NEXT_VERSION` to ACR.
 
-Notes:
-
-- The script uses a temporary candidate tag (`candidate-<timestamp>`) for digest comparison.
-- Promotion to final tag is done by digest (`docker buildx imagetools create`) to avoid rebuilding.
-- Requires: Azure CLI (`az`) login, Docker Buildx, and access to the target ACR.
+This avoids creating unnecessary ACR versions when content is effectively unchanged.
 
 ## Go implementation for conditional ACR push
 
@@ -74,11 +73,11 @@ GitHub Actions setup:
 - Configure repository secret `ACR_NAME` (for example: `myregistry`).
 - Run workflow `Component Versions` from Actions tab.
 
-The workflow runs the Go script and follows the same behavior:
+The workflow follows this behavior:
 
-- unchanged digest: prints and exits successfully.
-- changed digest + unchanged size: prints and exits successfully.
-- changed digest + changed size: runs test command and publishes the new digest.
+- unchanged digest: skip publish and skip ACA update.
+- changed digest + unchanged size: skip publish and skip ACA update.
+- changed digest + changed size: publish new image, then continue compare/update steps.
 
 ## GitHub Actions
 

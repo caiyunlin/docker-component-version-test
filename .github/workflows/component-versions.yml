@@ -135,17 +135,76 @@ jobs:
           echo "Current version: ${CURRENT_VERSION:-<none>}"
           echo "Next version: $NEXT_VERSION"
 
-      - name: Build current Ubuntu image and push next version
+      - name: Compare local build with current ACR image
         run: |
           set -euo pipefail
-          docker buildx build \
-            --progress=plain \
-            --provenance=false \
-            --sbom=false \
-            --target release-ubuntu \
-            --tag "$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$NEXT_VERSION" \
-            --push \
-            .
+          LOCAL_IMAGE="docker-component-version-test:ubuntu"
+          CURRENT_IMAGE="$ACR_LOGIN_SERVER/$ACR_REPOSITORY:${CURRENT_VERSION:-latest}"
+
+          LOCAL_IMAGE_ID=$(docker image inspect "$LOCAL_IMAGE" --format '{{.Id}}')
+          LOCAL_IMAGE_SIZE=$(docker image inspect "$LOCAL_IMAGE" --format '{{.Size}}')
+
+          echo "LOCAL_IMAGE_ID=$LOCAL_IMAGE_ID" >> "$GITHUB_ENV"
+          echo "LOCAL_IMAGE_SIZE=$LOCAL_IMAGE_SIZE" >> "$GITHUB_ENV"
+
+          SHOULD_PUBLISH="true"
+          SHOULD_RUN_TERRATEST="true"
+          COMPARE_RESULT="No current ACR image found; publish required"
+
+          if [ -n "${CURRENT_VERSION:-}" ]; then
+            if docker pull "$CURRENT_IMAGE"; then
+              CURRENT_IMAGE_ID=$(docker image inspect "$CURRENT_IMAGE" --format '{{.Id}}')
+              CURRENT_IMAGE_SIZE=$(docker image inspect "$CURRENT_IMAGE" --format '{{.Size}}')
+              CURRENT_IMAGE_REPO_DIGEST=$(docker image inspect "$CURRENT_IMAGE" --format '{{index .RepoDigests 0}}')
+
+              echo "CURRENT_IMAGE_ID=$CURRENT_IMAGE_ID" >> "$GITHUB_ENV"
+              echo "CURRENT_IMAGE_SIZE=$CURRENT_IMAGE_SIZE" >> "$GITHUB_ENV"
+              echo "CURRENT_IMAGE_REPO_DIGEST=$CURRENT_IMAGE_REPO_DIGEST" >> "$GITHUB_ENV"
+
+              if [ "$LOCAL_IMAGE_ID" = "$CURRENT_IMAGE_ID" ]; then
+                SHOULD_PUBLISH="false"
+                SHOULD_RUN_TERRATEST="false"
+                COMPARE_RESULT="Local image digest equals current ACR image digest"
+              elif [ "$LOCAL_IMAGE_SIZE" = "$CURRENT_IMAGE_SIZE" ]; then
+                SHOULD_PUBLISH="false"
+                SHOULD_RUN_TERRATEST="false"
+                COMPARE_RESULT="Digest differs but image size equals current ACR image"
+              else
+                COMPARE_RESULT="Digest and size changed; publish required"
+              fi
+            else
+              echo "CURRENT_IMAGE_ID=" >> "$GITHUB_ENV"
+              echo "CURRENT_IMAGE_SIZE=" >> "$GITHUB_ENV"
+              echo "CURRENT_IMAGE_REPO_DIGEST=" >> "$GITHUB_ENV"
+              COMPARE_RESULT="Cannot pull current ACR image; publish required"
+            fi
+          else
+            echo "CURRENT_IMAGE_ID=" >> "$GITHUB_ENV"
+            echo "CURRENT_IMAGE_SIZE=" >> "$GITHUB_ENV"
+            echo "CURRENT_IMAGE_REPO_DIGEST=" >> "$GITHUB_ENV"
+          fi
+
+          echo "SHOULD_PUBLISH=$SHOULD_PUBLISH" >> "$GITHUB_ENV"
+          echo "SHOULD_RUN_TERRATEST=$SHOULD_RUN_TERRATEST" >> "$GITHUB_ENV"
+          echo "COMPARE_RESULT=$COMPARE_RESULT" >> "$GITHUB_ENV"
+
+          echo "Local image digest (Id): $LOCAL_IMAGE_ID"
+          echo "Local image size: $LOCAL_IMAGE_SIZE"
+          if [ -n "${CURRENT_IMAGE_ID:-}" ]; then
+            echo "Current ACR image digest (Id): $CURRENT_IMAGE_ID"
+            echo "Current ACR image repo digest: $CURRENT_IMAGE_REPO_DIGEST"
+            echo "Current ACR image size: $CURRENT_IMAGE_SIZE"
+          fi
+          echo "Compare result: $COMPARE_RESULT"
+
+      - name: Publish next version only when changed
+        if: env.SHOULD_PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          TARGET_IMAGE="$ACR_LOGIN_SERVER/$ACR_REPOSITORY:$NEXT_VERSION"
+
+          docker tag docker-component-version-test:ubuntu "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
 
           NEXT_DIGEST=$(az acr manifest list-metadata \
             --registry "$ACR_NAME" \
@@ -154,15 +213,55 @@ jobs:
             --query "[?tags!=null && contains(tags, '$NEXT_VERSION')].digest | [0]" \
             -o tsv)
 
-          if [ -z "$NEXT_DIGEST" ]; then
+          if [ -z "$NEXT_DIGEST" ] || [ "$NEXT_DIGEST" = "None" ]; then
             echo "Cannot find digest for next version tag $NEXT_VERSION"
             exit 1
           fi
 
           echo "NEXT_DIGEST=$NEXT_DIGEST" >> "$GITHUB_ENV"
+          echo "NEXT_IMAGE_SIZE=$LOCAL_IMAGE_SIZE" >> "$GITHUB_ENV"
           echo "Next build digest: $NEXT_DIGEST"
 
+      - name: Skip ACR publish when image unchanged
+        if: env.SHOULD_PUBLISH != 'true'
+        run: |
+          echo "Skip publish: $COMPARE_RESULT"
+
+      - name: Write comparison summary
+        run: |
+          set -euo pipefail
+
+          CURRENT_VERSION_DISPLAY="${CURRENT_VERSION:-<none>}"
+          CURRENT_DIGEST_DISPLAY="${CURRENT_DIGEST:-<none>}"
+          NEXT_DIGEST_DISPLAY="${NEXT_DIGEST:-<none>}"
+          CURRENT_IMAGE_ID_DISPLAY="${CURRENT_IMAGE_ID:-<none>}"
+          LOCAL_IMAGE_ID_DISPLAY="${LOCAL_IMAGE_ID:-<none>}"
+          CURRENT_IMAGE_SIZE_DISPLAY="${CURRENT_IMAGE_SIZE:-<unknown>}"
+          LOCAL_IMAGE_SIZE_DISPLAY="${LOCAL_IMAGE_SIZE:-<unknown>}"
+          SHOULD_PUBLISH_DISPLAY="${SHOULD_PUBLISH:-false}"
+          SHOULD_RUN_TERRATEST_DISPLAY="${SHOULD_RUN_TERRATEST:-false}"
+          COMPARE_RESULT_DISPLAY="${COMPARE_RESULT:-<none>}"
+
+          {
+            echo "## ACR Image Comparison"
+            echo ""
+            echo "- Repository: ${ACR_LOGIN_SERVER}/${ACR_REPOSITORY}"
+            echo "- Current version: ${CURRENT_VERSION_DISPLAY}"
+            echo "- Next version: ${NEXT_VERSION}"
+            echo "- Compare result: ${COMPARE_RESULT_DISPLAY}"
+            echo "- Should publish: ${SHOULD_PUBLISH_DISPLAY}"
+            echo "- Should run terratest: ${SHOULD_RUN_TERRATEST_DISPLAY}"
+            echo ""
+            echo "| Item | Current ACR | Local Build / Next |"
+            echo "| --- | --- | --- |"
+            echo "| Tag | ${CURRENT_VERSION_DISPLAY} | ${NEXT_VERSION} |"
+            echo "| ACR manifest digest | ${CURRENT_DIGEST_DISPLAY} | ${NEXT_DIGEST_DISPLAY} |"
+            echo "| Docker image digest (Id) | ${CURRENT_IMAGE_ID_DISPLAY} | ${LOCAL_IMAGE_ID_DISPLAY} |"
+            echo "| Docker image size (bytes) | ${CURRENT_IMAGE_SIZE_DISPLAY} | ${LOCAL_IMAGE_SIZE_DISPLAY} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Compare current and next versions
+        if: env.SHOULD_PUBLISH == 'true'
         run: |
           set -euo pipefail
           go run ./cmd/compare-acr-images
