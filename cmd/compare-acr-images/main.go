@@ -8,11 +8,6 @@ import (
 	"strings"
 )
 
-const (
-	mediaTypeDockerManifestList = "application/vnd.docker.distribution.manifest.list.v2+json"
-	mediaTypeOCIImageIndex      = "application/vnd.oci.image.index.v1+json"
-)
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -21,133 +16,99 @@ func main() {
 }
 
 func run() error {
-	acrName := strings.TrimSpace(os.Getenv("ACR_NAME"))
 	acrRepository := strings.TrimSpace(os.Getenv("ACR_REPOSITORY"))
 	acrLoginServer := strings.TrimSpace(os.Getenv("ACR_LOGIN_SERVER"))
 	currentVersion := strings.TrimSpace(os.Getenv("CURRENT_VERSION"))
 	nextVersion := strings.TrimSpace(os.Getenv("NEXT_VERSION"))
 	currentDigest := strings.TrimSpace(os.Getenv("CURRENT_DIGEST"))
-	nextDigest := strings.TrimSpace(os.Getenv("NEXT_DIGEST"))
+	localImage := strings.TrimSpace(os.Getenv("LOCAL_IMAGE"))
 
-	if acrName == "" {
-		return fmt.Errorf("ACR_NAME is required")
+	if acrLoginServer == "" {
+		return fmt.Errorf("ACR_LOGIN_SERVER is required")
 	}
 	if acrRepository == "" {
 		return fmt.Errorf("ACR_REPOSITORY is required")
 	}
-	if nextDigest == "" {
-		return fmt.Errorf("NEXT_DIGEST is required")
+	if localImage == "" {
+		localImage = "docker-component-version-test:ubuntu"
 	}
 
-	currentImageSize, _ := resolveEffectiveSize(acrName, acrRepository, currentDigest)
-	nextImageSize, _ := resolveEffectiveSize(acrName, acrRepository, nextDigest)
-
-	if currentImageSize != "" {
-		setGitHubEnv("CURRENT_IMAGE_SIZE", currentImageSize)
-	} else {
-		setGitHubEnv("CURRENT_IMAGE_SIZE", "")
+	currentImage := ""
+	if currentVersion != "" {
+		currentImage = fmt.Sprintf("%s/%s:%s", acrLoginServer, acrRepository, currentVersion)
 	}
 
-	if nextImageSize != "" {
-		setGitHubEnv("NEXT_IMAGE_SIZE", nextImageSize)
-	} else {
-		setGitHubEnv("NEXT_IMAGE_SIZE", "")
+	localImageID, err := dockerInspect(localImage, "{{.Id}}")
+	if err != nil {
+		return fmt.Errorf("cannot inspect local image %q: %w", localImage, err)
+	}
+	localImageSize, err := dockerInspect(localImage, "{{.Size}}")
+	if err != nil {
+		return fmt.Errorf("cannot inspect local image size %q: %w", localImage, err)
 	}
 
-	result := "digest/size indicate content change"
-	shouldRunTerratest := "false"
+	setGitHubEnv("LOCAL_IMAGE_ID", localImageID)
+	setGitHubEnv("LOCAL_IMAGE_SIZE", localImageSize)
 
-	if currentDigest != "" && currentDigest == nextDigest {
-		result = "current and next digest are identical"
-		shouldRunTerratest = "false"
-	} else if currentDigest != "" && currentImageSize != "" && nextImageSize != "" && currentImageSize == nextImageSize {
-		result = "digest changed but effective image size unchanged"
-		shouldRunTerratest = "false"
-	} else if currentDigest != "" && currentImageSize != "" && nextImageSize != "" && currentDigest != nextDigest && currentImageSize != nextImageSize {
-		result = "digest and effective image size both changed (run terratest)"
-		shouldRunTerratest = "true"
+	currentImageID := ""
+	currentImageSize := ""
+	currentImageRepoDigest := ""
+
+	shouldPublish := "true"
+	shouldRunTerratest := "true"
+	result := "No current ACR image found; publish required"
+
+	if currentImage != "" {
+		if _, pullErr := runCommand("docker", "pull", currentImage); pullErr == nil {
+			currentImageID, _ = dockerInspect(currentImage, "{{.Id}}")
+			currentImageSize, _ = dockerInspect(currentImage, "{{.Size}}")
+			currentImageRepoDigest, _ = dockerInspect(currentImage, "{{index .RepoDigests 0}}")
+
+			if localImageID != "" && localImageID == currentImageID {
+				shouldPublish = "false"
+				shouldRunTerratest = "false"
+				result = "Local image digest equals current ACR image digest"
+			} else if localImageSize != "" && localImageSize == currentImageSize {
+				shouldPublish = "false"
+				shouldRunTerratest = "false"
+				result = "Digest differs but image size equals current ACR image"
+			} else {
+				result = "Digest and size changed; publish required"
+			}
+		} else {
+			result = "Cannot pull current ACR image; publish required"
+		}
 	}
 
+	setGitHubEnv("CURRENT_IMAGE_ID", currentImageID)
+	setGitHubEnv("CURRENT_IMAGE_SIZE", currentImageSize)
+	setGitHubEnv("CURRENT_IMAGE_REPO_DIGEST", currentImageRepoDigest)
+	setGitHubEnv("SHOULD_PUBLISH", shouldPublish)
 	setGitHubEnv("SHOULD_RUN_TERRATEST", shouldRunTerratest)
-	appendStepSummary(acrLoginServer, acrRepository, currentVersion, nextVersion, currentDigest, nextDigest, currentImageSize, nextImageSize, result)
+	setGitHubEnv("COMPARE_RESULT", result)
 
-	fmt.Printf("Result: %s\n", result)
+	nextDigest := strings.TrimSpace(os.Getenv("NEXT_DIGEST"))
+	if shouldPublish != "true" {
+		nextDigest = ""
+	}
+
+	appendStepSummary(acrLoginServer, acrRepository, currentVersion, nextVersion, currentDigest, nextDigest, currentImageID, localImageID, currentImageSize, localImageSize, shouldPublish, shouldRunTerratest, result)
+
+	fmt.Printf("Local image digest (Id): %s\n", fallback(localImageID, "<none>"))
+	fmt.Printf("Local image size: %s\n", fallback(localImageSize, "<unknown>"))
+	if currentImageID != "" {
+		fmt.Printf("Current ACR image digest (Id): %s\n", currentImageID)
+		fmt.Printf("Current ACR image repo digest: %s\n", fallback(currentImageRepoDigest, "<none>"))
+		fmt.Printf("Current ACR image size: %s\n", fallback(currentImageSize, "<unknown>"))
+	}
+	fmt.Printf("Compare result: %s\n", result)
+	fmt.Printf("SHOULD_PUBLISH=%s\n", shouldPublish)
 	fmt.Printf("SHOULD_RUN_TERRATEST=%s\n", shouldRunTerratest)
 
 	return nil
 }
 
-func resolveEffectiveSize(acrName, repository, digest string) (string, error) {
-	if digest == "" {
-		return "", nil
-	}
-
-	mediaType, err := queryTSV(
-		"az", "acr", "manifest", "list-metadata",
-		"--registry", acrName,
-		"--name", repository,
-		"--orderby", "time_desc",
-		"--query", fmt.Sprintf("[?digest=='%s'].mediaType | [0]", digest),
-		"-o", "tsv",
-	)
-	if err != nil {
-		return "", nil
-	}
-
-	if mediaType == mediaTypeDockerManifestList || mediaType == mediaTypeOCIImageIndex {
-		childDigest, _ := queryTSV(
-			"az", "acr", "manifest", "show",
-			"--registry", acrName,
-			"--name", fmt.Sprintf("%s@%s", repository, digest),
-			"--query", "manifests[?platform.os=='linux' && platform.architecture=='amd64'].digest | [0]",
-			"-o", "tsv",
-		)
-
-		if childDigest == "" || strings.EqualFold(childDigest, "None") {
-			childDigest, _ = queryTSV(
-				"az", "acr", "manifest", "show",
-				"--registry", acrName,
-				"--name", fmt.Sprintf("%s@%s", repository, digest),
-				"--query", "manifests[0].digest",
-				"-o", "tsv",
-			)
-		}
-
-		if childDigest != "" && !strings.EqualFold(childDigest, "None") {
-			childSize, _ := queryTSV(
-				"az", "acr", "manifest", "list-metadata",
-				"--registry", acrName,
-				"--name", repository,
-				"--orderby", "time_desc",
-				"--query", fmt.Sprintf("[?digest=='%s'].imageSize | [0]", childDigest),
-				"-o", "tsv",
-			)
-			if childSize != "" && !strings.EqualFold(childSize, "None") && childSize != "0" {
-				return childSize, nil
-			}
-		}
-	}
-
-	directSize, err := queryTSV(
-		"az", "acr", "manifest", "list-metadata",
-		"--registry", acrName,
-		"--name", repository,
-		"--orderby", "time_desc",
-		"--query", fmt.Sprintf("[?digest=='%s'].imageSize | [0]", digest),
-		"-o", "tsv",
-	)
-	if err != nil {
-		return "", nil
-	}
-
-	if directSize != "" && !strings.EqualFold(directSize, "None") && directSize != "0" {
-		return directSize, nil
-	}
-
-	return "", nil
-}
-
-func appendStepSummary(acrLoginServer, repository, currentVersion, nextVersion, currentDigest, nextDigest, currentImageSize, nextImageSize, result string) {
+func appendStepSummary(acrLoginServer, repository, currentVersion, nextVersion, currentDigest, nextDigest, currentImageID, localImageID, currentImageSize, localImageSize, shouldPublish, shouldRunTerratest, result string) {
 	summaryPath := strings.TrimSpace(os.Getenv("GITHUB_STEP_SUMMARY"))
 	if summaryPath == "" {
 		return
@@ -166,26 +127,48 @@ func appendStepSummary(acrLoginServer, repository, currentVersion, nextVersion, 
 	if currentDigest == "" {
 		currentDigest = "<none>"
 	}
+	if nextDigest == "" {
+		nextDigest = "<none>"
+	}
+	if currentImageID == "" {
+		currentImageID = "<none>"
+	}
+	if localImageID == "" {
+		localImageID = "<none>"
+	}
 	if currentImageSize == "" {
 		currentImageSize = "<unknown>"
 	}
-	if nextImageSize == "" {
-		nextImageSize = "<unknown>"
+	if localImageSize == "" {
+		localImageSize = "<unknown>"
 	}
 
 	_, _ = fmt.Fprintf(
 		f,
-		"## Component Versions ACR Publish\n\n- Registry: %s\n- Repository: %s\n- Current version: %s\n- Next version: %s\n- Current digest: %s\n- Next digest: %s\n- Current image size: %s\n- Next image size: %s\n- Result: %s\n",
+		"## ACR Image Comparison\n\n- Repository: %s/%s\n- Current version: %s\n- Next version: %s\n- Compare result: %s\n- Should publish: %s\n- Should run terratest: %s\n\n| Item | Current ACR | Local Build / Next |\n| --- | --- | --- |\n| Tag | %s | %s |\n| ACR manifest digest | %s | %s |\n| Docker image digest (Id) | %s | %s |\n| Docker image size (bytes) | %s | %s |\n",
 		acrLoginServer,
 		repository,
 		currentVersion,
 		nextVersion,
+		result,
+		shouldPublish,
+		shouldRunTerratest,
+		currentVersion,
+		nextVersion,
 		currentDigest,
 		nextDigest,
+		currentImageID,
+		localImageID,
 		currentImageSize,
-		nextImageSize,
-		result,
+		localImageSize,
 	)
+}
+
+func fallback(value, fallbackValue string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallbackValue
+	}
+	return value
 }
 
 func setGitHubEnv(key, value string) {
@@ -204,18 +187,32 @@ func setGitHubEnv(key, value string) {
 	_, _ = fmt.Fprintf(f, "%s=%s\n", key, value)
 }
 
-func queryTSV(name string, args ...string) (string, error) {
-	out, err := runCommandSilent(name, args...)
+func dockerInspect(imageRef, format string) (string, error) {
+	out, err := runCommandSilent("docker", "image", "inspect", imageRef, "--format", format)
 	if err != nil {
 		return "", err
 	}
+	return strings.TrimSpace(out), nil
+}
 
-	val := strings.TrimSpace(out)
-	if strings.EqualFold(val, "None") {
-		return "", nil
+func runCommand(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	out := stdout.String()
+	if out != "" {
+		fmt.Print(out)
+	}
+	if err != nil {
+		return out, fmt.Errorf("command failed: %s %s\n%s", name, strings.Join(args, " "), strings.TrimSpace(stderr.String()))
 	}
 
-	return val, nil
+	return out, nil
 }
 
 func runCommandSilent(name string, args ...string) (string, error) {

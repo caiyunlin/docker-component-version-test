@@ -41,7 +41,7 @@ before any push:
 
 - Build the Ubuntu release image locally.
 - Pull the current ACR version tag (latest semantic version) into the job.
-- Compare local image digest (`docker image inspect .Id`) and image size (`.Size`) with the pulled image.
+- Run Go command `cmd/compare-acr-images` to compare local image digest (`docker image inspect .Id`) and image size (`.Size`) with the pulled image.
 - If digest is the same: skip push.
 - If digest is different but size is the same: skip push.
 - Only when digest and size both indicate changes: push `NEXT_VERSION` to ACR.
@@ -50,10 +50,14 @@ This avoids creating unnecessary ACR versions when content is effectively unchan
 
 ## Go implementation for conditional ACR push
 
-You can run this locally or in CI:
+You can run this locally when you want a standalone command:
 
 - Go entry point: `cmd/acr-push-if-changed/main.go`
-- Workflow integration: `.github/workflows/component-versions.yml`
+
+Note:
+
+- CI workflow uses `cmd/compare-acr-images` as the comparison and summary engine.
+- `cmd/acr-push-if-changed` remains a standalone local/manual command.
 
 Local example:
 
