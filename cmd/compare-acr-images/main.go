@@ -71,20 +71,24 @@ func run() error {
 			currentRootFSLayers, _ = dockerInspect(currentImage, "{{json .RootFS.Layers}}")
 			currentImageRepoDigest, _ = dockerInspect(currentImage, "{{index .RepoDigests 0}}")
 
-			if localImageID != "" && localImageID == currentImageID {
+			imageIDChanged := valueChanged(currentImageID, localImageID)
+			imageSizeChanged := valueChanged(currentImageSize, localImageSize)
+			rootFSLayersChanged := valueChanged(currentRootFSLayers, localRootFSLayers)
+
+			if !imageIDChanged {
 				shouldPublish = "false"
 				shouldRunTerratest = "false"
-				result = "Local image digest equals current ACR image digest"
-			} else if localRootFSLayers != "" && localRootFSLayers == currentRootFSLayers {
+				result = "Docker image digest is unchanged or unknown"
+			} else if !rootFSLayersChanged {
 				shouldPublish = "false"
 				shouldRunTerratest = "false"
-				result = "Digest differs but RootFS layers equal current ACR image"
-			} else if localImageSize != "" && localImageSize == currentImageSize {
+				result = "Docker image digest changed but RootFS layers are unchanged or unknown"
+			} else if !imageSizeChanged {
 				shouldPublish = "false"
 				shouldRunTerratest = "false"
-				result = "Digest differs but image size equals current ACR image"
+				result = "Docker image digest and RootFS layers changed but image size is unchanged or unknown"
 			} else {
-				result = "Digest, RootFS layers, and size indicate changes; publish required"
+				result = "Docker image digest, RootFS layers, and size all changed; publish required"
 			}
 		} else {
 			result = "Cannot pull current ACR image; publish required"
@@ -165,7 +169,7 @@ func appendStepSummary(acrLoginServer, repository, currentVersion, nextVersion, 
 
 	_, _ = fmt.Fprintf(
 		f,
-		"## ACR Image Comparison\n\n- Repository: %s/%s\n- Current version: %s\n- Next version: %s\n- Compare result: %s\n- Should publish: %s\n- Should run terratest: %s\n\n| Item | Current ACR | Local Build / Next |\n| --- | --- | --- |\n| Tag | %s | %s |\n| ACR manifest digest | %s | %s |\n| Docker image digest (Id) | %s | %s |\n| Docker image size (bytes) | %s | %s |\n| RootFS layers | `%s` | `%s` |\n",
+		"## ACR Image Comparison\n\n- Repository: %s/%s\n- Current version: %s\n- Next version: %s\n- Compare result: %s\n- Should publish: %s\n- Should run terratest: %s\n\n| Item | Changed | Current ACR | Local Build / Next |\n| --- | --- | --- | --- |\n| Tag | %s | %s | %s |\n| ACR manifest digest | %s | %s | %s |\n| Docker image digest (Id) | %s | %s | %s |\n| Docker image size (bytes) | %s | %s | %s |\n| RootFS layers | %s | `%s` | `%s` |\n",
 		acrLoginServer,
 		repository,
 		currentVersion,
@@ -173,17 +177,40 @@ func appendStepSummary(acrLoginServer, repository, currentVersion, nextVersion, 
 		result,
 		shouldPublish,
 		shouldRunTerratest,
+		changedLabel(currentVersion, nextVersion),
 		currentVersion,
 		nextVersion,
+		changedLabel(currentDigest, nextDigest),
 		currentDigest,
 		nextDigest,
+		changedLabel(currentImageID, localImageID),
 		currentImageID,
 		localImageID,
+		changedLabel(currentImageSize, localImageSize),
 		currentImageSize,
 		localImageSize,
+		changedLabel(currentRootFSLayers, localRootFSLayers),
 		currentRootFSLayers,
 		localRootFSLayers,
 	)
+}
+
+func valueChanged(current, candidate string) bool {
+	current = strings.TrimSpace(current)
+	candidate = strings.TrimSpace(candidate)
+	return current != "" && candidate != "" && current != candidate
+}
+
+func changedLabel(current, candidate string) string {
+	current = strings.TrimSpace(current)
+	candidate = strings.TrimSpace(candidate)
+	if current == "" || candidate == "" || current == "<none>" || candidate == "<none>" || current == "<unknown>" || candidate == "<unknown>" {
+		return "Unknown"
+	}
+	if current == candidate {
+		return "No"
+	}
+	return "Yes"
 }
 
 func fallback(value, fallbackValue string) string {

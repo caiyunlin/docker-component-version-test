@@ -110,14 +110,15 @@ func run(cfg config) error {
 	}
 	fmt.Printf("Candidate digest: %s\n", newDigest)
 
-	if oldDigest != "" && oldDigest == newDigest {
+	digestChanged := oldDigest != "" && newDigest != "" && oldDigest != newDigest
+	if oldDigest != "" && !digestChanged {
 		fmt.Println("Digest unchanged. Skip tests and publish.")
 		cleanupCandidateTag(normalizedAcrName, cfg.repository, candidateTag)
 		return nil
 	}
 
 	if oldDigest != "" {
-		fmt.Println("Digest changed. Compare RootFS layers as secondary check.")
+		fmt.Println("Digest changed. Compare RootFS layers and image size.")
 
 		oldRootFSLayers, oldRootFSKnown, oldRootFSErr := getImageRootFSLayers(imageRef)
 		newRootFSLayers, newRootFSKnown, newRootFSErr := getImageRootFSLayers(candidateRef)
@@ -137,14 +138,6 @@ func run(cfg config) error {
 			fmt.Fprintf(os.Stderr, "warning: cannot resolve candidate RootFS layers: %v\n", newRootFSErr)
 		}
 
-		if oldRootFSErr == nil && newRootFSErr == nil && oldRootFSKnown && newRootFSKnown && oldRootFSLayers == newRootFSLayers {
-			fmt.Println("Digest changed but RootFS layers unchanged. Treat as unchanged and skip tests/publish.")
-			cleanupCandidateTag(normalizedAcrName, cfg.repository, candidateTag)
-			return nil
-		}
-
-		fmt.Println("RootFS layers differ or are unknown. Compare image size as fallback check.")
-
 		oldSize, oldSizeKnown, oldSizeErr := getTagImageSize(normalizedAcrName, cfg.repository, cfg.tag)
 		newSize, newSizeKnown, newSizeErr := getTagImageSize(normalizedAcrName, cfg.repository, candidateTag)
 
@@ -163,13 +156,22 @@ func run(cfg config) error {
 			fmt.Fprintf(os.Stderr, "warning: cannot resolve candidate image size: %v\n", newSizeErr)
 		}
 
-		if oldSizeErr == nil && newSizeErr == nil && oldSizeKnown && newSizeKnown && oldSize == newSize {
-			fmt.Println("Digest changed but image size unchanged. Treat as unchanged and skip tests/publish.")
+		rootFSLayersChanged := oldRootFSErr == nil && newRootFSErr == nil && oldRootFSKnown && newRootFSKnown && oldRootFSLayers != newRootFSLayers
+		imageSizeChanged := oldSizeErr == nil && newSizeErr == nil && oldSizeKnown && newSizeKnown && oldSize != newSize
+
+		if !rootFSLayersChanged {
+			fmt.Println("Digest changed but RootFS layers are unchanged or unknown. Treat as unchanged and skip tests/publish.")
 			cleanupCandidateTag(normalizedAcrName, cfg.repository, candidateTag)
 			return nil
 		}
 
-		fmt.Println("Digest, RootFS layers, and image size indicate changes. Execute test phase.")
+		if !imageSizeChanged {
+			fmt.Println("Digest and RootFS layers changed but image size is unchanged or unknown. Treat as unchanged and skip tests/publish.")
+			cleanupCandidateTag(normalizedAcrName, cfg.repository, candidateTag)
+			return nil
+		}
+
+		fmt.Println("Digest, RootFS layers, and image size all changed. Execute test phase.")
 	} else {
 		fmt.Println("No existing digest found. Execute test phase.")
 	}
