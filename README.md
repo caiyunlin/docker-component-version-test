@@ -41,10 +41,11 @@ before any push:
 
 - Build the Ubuntu release image locally.
 - Pull the current ACR version tag (latest semantic version) into the job.
-- Run Go command `cmd/compare-acr-images` to compare local image digest (`docker image inspect .Id`) and image size (`.Size`) with the pulled image.
+- Run Go command `cmd/compare-acr-images` to compare local image digest (`docker image inspect .Id`), RootFS layers (`.RootFS.Layers`), and image size (`.Size`) with the pulled image.
 - If digest is the same: skip push.
+- If digest is different but RootFS layers are the same: skip push.
 - If digest is different but size is the same: skip push.
-- Only when digest and size both indicate changes: push `NEXT_VERSION` to ACR.
+- Only when digest, RootFS layers, and size all indicate changes: push `NEXT_VERSION` to ACR.
 
 This avoids creating unnecessary ACR versions when content is effectively unchanged.
 
@@ -80,8 +81,9 @@ GitHub Actions setup:
 The workflow follows this behavior:
 
 - unchanged digest: skip publish and skip ACA update.
+- changed digest + unchanged RootFS layers: skip publish and skip ACA update.
 - changed digest + unchanged size: skip publish and skip ACA update.
-- changed digest + changed size: publish new image, then continue compare/update steps.
+- changed digest + changed RootFS layers + changed size: publish new image, then continue compare/update steps.
 
 ## GitHub Actions
 

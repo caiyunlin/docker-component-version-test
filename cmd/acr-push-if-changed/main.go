@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"strconv"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -117,7 +117,33 @@ func run(cfg config) error {
 	}
 
 	if oldDigest != "" {
-		fmt.Println("Digest changed. Compare image size as secondary check.")
+		fmt.Println("Digest changed. Compare RootFS layers as secondary check.")
+
+		oldRootFSLayers, oldRootFSKnown, oldRootFSErr := getImageRootFSLayers(imageRef)
+		newRootFSLayers, newRootFSKnown, newRootFSErr := getImageRootFSLayers(candidateRef)
+
+		if oldRootFSErr == nil && oldRootFSKnown {
+			fmt.Printf("Existing RootFS layers: %s\n", oldRootFSLayers)
+		} else if oldRootFSErr == nil {
+			fmt.Println("Existing RootFS layers: <unknown>")
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: cannot resolve existing RootFS layers: %v\n", oldRootFSErr)
+		}
+		if newRootFSErr == nil && newRootFSKnown {
+			fmt.Printf("Candidate RootFS layers: %s\n", newRootFSLayers)
+		} else if newRootFSErr == nil {
+			fmt.Println("Candidate RootFS layers: <unknown>")
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: cannot resolve candidate RootFS layers: %v\n", newRootFSErr)
+		}
+
+		if oldRootFSErr == nil && newRootFSErr == nil && oldRootFSKnown && newRootFSKnown && oldRootFSLayers == newRootFSLayers {
+			fmt.Println("Digest changed but RootFS layers unchanged. Treat as unchanged and skip tests/publish.")
+			cleanupCandidateTag(normalizedAcrName, cfg.repository, candidateTag)
+			return nil
+		}
+
+		fmt.Println("RootFS layers differ or are unknown. Compare image size as fallback check.")
 
 		oldSize, oldSizeKnown, oldSizeErr := getTagImageSize(normalizedAcrName, cfg.repository, cfg.tag)
 		newSize, newSizeKnown, newSizeErr := getTagImageSize(normalizedAcrName, cfg.repository, candidateTag)
@@ -143,7 +169,7 @@ func run(cfg config) error {
 			return nil
 		}
 
-		fmt.Println("Digest and image size indicate changes. Execute test phase.")
+		fmt.Println("Digest, RootFS layers, and image size indicate changes. Execute test phase.")
 	} else {
 		fmt.Println("No existing digest found. Execute test phase.")
 	}
@@ -231,6 +257,24 @@ func getTagImageSize(acrName, repository, tag string) (int64, bool, error) {
 	}
 
 	return size, true, nil
+}
+
+func getImageRootFSLayers(imageRef string) (string, bool, error) {
+	if _, err := runCommand("docker", "pull", imageRef); err != nil {
+		return "", false, err
+	}
+
+	out, err := runCommandSilent("docker", "image", "inspect", imageRef, "--format", "{{json .RootFS.Layers}}")
+	if err != nil {
+		return "", false, err
+	}
+
+	layers := strings.TrimSpace(out)
+	if layers == "" || layers == "null" {
+		return "", false, nil
+	}
+
+	return layers, true, nil
 }
 
 func runShellCommand(command string) (string, error) {

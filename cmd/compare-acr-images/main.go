@@ -46,12 +46,18 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("cannot inspect local image size %q: %w", localImage, err)
 	}
+	localRootFSLayers, err := dockerInspect(localImage, "{{json .RootFS.Layers}}")
+	if err != nil {
+		return fmt.Errorf("cannot inspect local image RootFS layers %q: %w", localImage, err)
+	}
 
 	setGitHubEnv("LOCAL_IMAGE_ID", localImageID)
 	setGitHubEnv("LOCAL_IMAGE_SIZE", localImageSize)
+	setGitHubEnv("LOCAL_ROOTFS_LAYERS", localRootFSLayers)
 
 	currentImageID := ""
 	currentImageSize := ""
+	currentRootFSLayers := ""
 	currentImageRepoDigest := ""
 
 	shouldPublish := "true"
@@ -62,18 +68,23 @@ func run() error {
 		if _, pullErr := runCommand("docker", "pull", currentImage); pullErr == nil {
 			currentImageID, _ = dockerInspect(currentImage, "{{.Id}}")
 			currentImageSize, _ = dockerInspect(currentImage, "{{.Size}}")
+			currentRootFSLayers, _ = dockerInspect(currentImage, "{{json .RootFS.Layers}}")
 			currentImageRepoDigest, _ = dockerInspect(currentImage, "{{index .RepoDigests 0}}")
 
 			if localImageID != "" && localImageID == currentImageID {
 				shouldPublish = "false"
 				shouldRunTerratest = "false"
 				result = "Local image digest equals current ACR image digest"
+			} else if localRootFSLayers != "" && localRootFSLayers == currentRootFSLayers {
+				shouldPublish = "false"
+				shouldRunTerratest = "false"
+				result = "Digest differs but RootFS layers equal current ACR image"
 			} else if localImageSize != "" && localImageSize == currentImageSize {
 				shouldPublish = "false"
 				shouldRunTerratest = "false"
 				result = "Digest differs but image size equals current ACR image"
 			} else {
-				result = "Digest and size changed; publish required"
+				result = "Digest, RootFS layers, and size indicate changes; publish required"
 			}
 		} else {
 			result = "Cannot pull current ACR image; publish required"
@@ -82,6 +93,7 @@ func run() error {
 
 	setGitHubEnv("CURRENT_IMAGE_ID", currentImageID)
 	setGitHubEnv("CURRENT_IMAGE_SIZE", currentImageSize)
+	setGitHubEnv("CURRENT_ROOTFS_LAYERS", currentRootFSLayers)
 	setGitHubEnv("CURRENT_IMAGE_REPO_DIGEST", currentImageRepoDigest)
 	setGitHubEnv("SHOULD_PUBLISH", shouldPublish)
 	setGitHubEnv("SHOULD_RUN_TERRATEST", shouldRunTerratest)
@@ -92,14 +104,16 @@ func run() error {
 		nextDigest = ""
 	}
 
-	appendStepSummary(acrLoginServer, acrRepository, currentVersion, nextVersion, currentDigest, nextDigest, currentImageID, localImageID, currentImageSize, localImageSize, shouldPublish, shouldRunTerratest, result)
+	appendStepSummary(acrLoginServer, acrRepository, currentVersion, nextVersion, currentDigest, nextDigest, currentImageID, localImageID, currentImageSize, localImageSize, currentRootFSLayers, localRootFSLayers, shouldPublish, shouldRunTerratest, result)
 
 	fmt.Printf("Local image digest (Id): %s\n", fallback(localImageID, "<none>"))
 	fmt.Printf("Local image size: %s\n", fallback(localImageSize, "<unknown>"))
+	fmt.Printf("Local RootFS layers: %s\n", fallback(localRootFSLayers, "<unknown>"))
 	if currentImageID != "" {
 		fmt.Printf("Current ACR image digest (Id): %s\n", currentImageID)
 		fmt.Printf("Current ACR image repo digest: %s\n", fallback(currentImageRepoDigest, "<none>"))
 		fmt.Printf("Current ACR image size: %s\n", fallback(currentImageSize, "<unknown>"))
+		fmt.Printf("Current ACR RootFS layers: %s\n", fallback(currentRootFSLayers, "<unknown>"))
 	}
 	fmt.Printf("Compare result: %s\n", result)
 	fmt.Printf("SHOULD_PUBLISH=%s\n", shouldPublish)
@@ -108,7 +122,7 @@ func run() error {
 	return nil
 }
 
-func appendStepSummary(acrLoginServer, repository, currentVersion, nextVersion, currentDigest, nextDigest, currentImageID, localImageID, currentImageSize, localImageSize, shouldPublish, shouldRunTerratest, result string) {
+func appendStepSummary(acrLoginServer, repository, currentVersion, nextVersion, currentDigest, nextDigest, currentImageID, localImageID, currentImageSize, localImageSize, currentRootFSLayers, localRootFSLayers, shouldPublish, shouldRunTerratest, result string) {
 	summaryPath := strings.TrimSpace(os.Getenv("GITHUB_STEP_SUMMARY"))
 	if summaryPath == "" {
 		return
@@ -142,10 +156,16 @@ func appendStepSummary(acrLoginServer, repository, currentVersion, nextVersion, 
 	if localImageSize == "" {
 		localImageSize = "<unknown>"
 	}
+	if currentRootFSLayers == "" {
+		currentRootFSLayers = "<unknown>"
+	}
+	if localRootFSLayers == "" {
+		localRootFSLayers = "<unknown>"
+	}
 
 	_, _ = fmt.Fprintf(
 		f,
-		"## ACR Image Comparison\n\n- Repository: %s/%s\n- Current version: %s\n- Next version: %s\n- Compare result: %s\n- Should publish: %s\n- Should run terratest: %s\n\n| Item | Current ACR | Local Build / Next |\n| --- | --- | --- |\n| Tag | %s | %s |\n| ACR manifest digest | %s | %s |\n| Docker image digest (Id) | %s | %s |\n| Docker image size (bytes) | %s | %s |\n",
+		"## ACR Image Comparison\n\n- Repository: %s/%s\n- Current version: %s\n- Next version: %s\n- Compare result: %s\n- Should publish: %s\n- Should run terratest: %s\n\n| Item | Current ACR | Local Build / Next |\n| --- | --- | --- |\n| Tag | %s | %s |\n| ACR manifest digest | %s | %s |\n| Docker image digest (Id) | %s | %s |\n| Docker image size (bytes) | %s | %s |\n| RootFS layers | `%s` | `%s` |\n",
 		acrLoginServer,
 		repository,
 		currentVersion,
@@ -161,6 +181,8 @@ func appendStepSummary(acrLoginServer, repository, currentVersion, nextVersion, 
 		localImageID,
 		currentImageSize,
 		localImageSize,
+		currentRootFSLayers,
+		localRootFSLayers,
 	)
 }
 
